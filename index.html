@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 27; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 28; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -526,8 +526,19 @@ const planetAt = (cx, cy) => {
 };
 
 // ===== Commande =====
+// clavier (PC) : flèches, ZQSD ou WASD = poussée dans la direction de la touche (diagonales possibles)
+const keys = new Set();
+const KEY_DIR = { arrowup: [0, -1], z: [0, -1], w: [0, -1], arrowdown: [0, 1], s: [0, 1], arrowleft: [-1, 0], q: [-1, 0], a: [-1, 0], arrowright: [1, 0], d: [1, 0] };
+function keyThrust() {
+  let x = 0, y = 0;
+  for (const k of keys) { const v = KEY_DIR[k]; if (v) { x += v[0]; y += v[1]; } }
+  const d = Math.hypot(x, y);
+  return d ? { x: x / d, y: y / d, p: 1 } : null;
+}
+
 function thrustInput() {
-  if (!touch || state !== 'play') return null;
+  if (state !== 'play') return null;
+  if (!touch) return keys.size ? keyThrust() : null;
   const dx = touch.x - ctrl.x, dy = touch.y - ctrl.y, d = Math.hypot(dx, dy);
   if (d < ctrl.r * 0.12) return null;
   // doigt à droite → gaz éjecté à droite → poussée vers la gauche
@@ -659,6 +670,29 @@ const release = e => { if (screen === 'editor') { editorPointerUp(e); return; } 
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
 cv.addEventListener('contextmenu', e => e.preventDefault());
+
+addEventListener('keydown', e => {
+  if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || document.querySelector('.modal')) return;
+  const k = e.key.toLowerCase();
+  if (screen !== 'game') return;
+  if (KEY_DIR[k]) {
+    e.preventDefault();
+    if (state !== 'play') return;
+    // simulation affichée : une touche l'annule sans décoller (comme un appui ailleurs que sur « Valider »)
+    if (!departed && taps.length) { taps = []; plan = null; if (planJob) { planJob.cancel = true; planJob = null; } return; }
+    keys.add(k);
+    return;
+  }
+  if (k === 'r') loadLevel(lvl, testMode || playCtx ? L : undefined);                       // recommencer
+  else if (k === 'escape') { cancelJobs(); keys.clear(); if (testMode) backToEditor(); else if (playCtx) openPerso(); else screen = 'levels'; } // retour
+  else if (k === 'enter') {
+    if (state === 'play' && canValidate()) { auto = { P: plan.P, x: taps[0][0], y: taps[0][1] }; simFlight = true; depart(); } // valider la trajectoire
+    else if (state === 'won' && stateT > 0.6) { if (testMode) backToEditor(); else if (playCtx) openPerso(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
+    else if (state === 'lost' && stateT > 0.6) loadLevel(lvl, testMode || playCtx ? L : undefined);
+  } else if ((k === 'h' || k === '?') && !departed && state === 'play') { showHelp = !showHelp; if (showHelp) runHelp(); } // aide
+});
+addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
+addEventListener('blur', () => keys.clear());
 
 // ===== Physique : pas fixe identique à la simulation =====
 function tick() {

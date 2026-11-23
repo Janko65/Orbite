@@ -107,7 +107,7 @@ function openEditor(mode = 'perso', idx) {
     ED.levels = Array.isArray(draft) && draft.length ? draft : JSON.parse(JSON.stringify(LV));
   } else {
     ED.levels = persoList('mine');
-    if (!ED.levels.length) { ED.levels.push(newLevel()); persoSave('mine', ED.levels); }
+    if (!ED.levels.length) { chooseTemplate(); return; }
   }
   ED.cur = Math.max(0, Math.min(idx ?? ED.cur, ED.levels.length - 1));
   ED.sel = null; ED.tab = 'astre'; ED.view = null;
@@ -436,7 +436,11 @@ function openMenu() {
   modal((box, close) => {
     const Lv = EL(), act = fn => () => { close(); fn(); };
     const dup = () => { const c = JSON.parse(JSON.stringify(Lv, (k, v) => (k === '_B' || k === 'stars') ? undefined : v)); c.name = (c.name || '') + ' (copie)'; ED.levels.splice(ED.cur + 1, 0, c); saveDraft(); selectLevel(ED.cur + 1); };
-    const del = () => confirmBox(`Supprimer « ${Lv.name || 'Sans nom'} » ?`, () => { ED.levels.splice(ED.cur, 1); if (!ED.levels.length) ED.levels.push(newLevel()); saveDraft(); selectLevel(Math.min(ED.cur, ED.levels.length - 1)); });
+    const del = () => confirmBox(`Supprimer « ${Lv.name || 'Sans nom'} » ?`, () => {
+      ED.levels.splice(ED.cur, 1); saveDraft();
+      if (!ED.levels.length) { closeEditor(); return; } // plus aucune création : retour à la liste
+      selectLevel(Math.min(ED.cur, ED.levels.length - 1));
+    });
     if (ED.mode === 'perso') {
       box.append(el('h3', {}, 'Menu'), el('div', { class: 'menu' },
         el('button', { onclick: act(chooseTemplate) }, 'Nouveau niveau'),
@@ -558,6 +562,7 @@ function openPerso() {
       el('button', { onclick: () => { closePerso(); openEditor('perso', i); } }, 'Modifier'),
       el('button', { onclick: () => shareLevel(l) }, 'Partager'),
       el('button', { onclick: () => shareSolution(l) }, 'Solution'),
+      el('button', { class: 'dan', onclick: () => confirmBox(`Supprimer « ${l.name || 'Sans nom'} » ?`, () => { const m = persoList('mine'); m.splice(i, 1); persoSave('mine', m); openPerso(); }) }, 'Supprimer'),
     ])) : el('div', { class: 'hint' }, 'Aucune création pour l’instant.'),
     el('h3', { style: 'margin:8px 0 0;font-size:16px' }, 'Niveaux reçus'),
     recus.length ? recus.map((l, i) => card(l.name || 'Sans nom', stars(l), [
