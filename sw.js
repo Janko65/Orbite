@@ -1,6 +1,6 @@
 // Orbite — service worker : fonctionnement hors ligne et mises à jour
 // Changer le numéro de version à chaque mise à jour des fichiers (et APP_VERSION dans index.html)
-const CACHE = 'orbite-v28';
+const CACHE = 'orbite-v29';
 const FILES = ['./', './index.html', './engine.js', './niveaux.js', './editeur.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

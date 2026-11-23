@@ -426,8 +426,8 @@ function testLevel() {
   const Lv = EL();
   stopSolve();
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = 'none';
-  resize();
   testMode = true; screen = 'game';
+  resize(); // mise en page du jeu (et non celle de l'éditeur) avant de lancer le niveau
   loadLevel(ED.cur, Lv);
 }
 
