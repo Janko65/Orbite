@@ -2,7 +2,7 @@
 // Physique, astres mobiles (lunes), étoiles et ombres, objectifs, pilote automatique, simulation, calibrage.
 
 // ===== Réglages physiques =====
-const WORLD_W = 1000, WORLD_H = 1500; // taille du monde (1 unité = 1 m)
+const WORLD_W = 1000, WORLD_H = 2000; // taille du monde (1 unité = 1 m), proportion d'un écran de téléphone
 const K = 0.5;              // G × densité : gravité de surface = K × rayon × g ; masse ∝ rayon³
 const STAR_DENSITY = 0.25;  // une étoile est moins dense qu'une planète
 const THRUST = 110;         // accélération max des jets (m/s²)

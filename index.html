@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 25; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 27; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -45,6 +45,12 @@ let tip = null, touch = null, particles = [];
 let medals = {};
 let screen = 'home', homeTex = null; // écrans : accueil, liste des niveaux, jeu, éditeur
 let testMode = false; // partie lancée depuis l'éditeur (« Tester »)
+let playCtx = null;    // partie d'un niveau perso : {kind: 'mine' (mes créations) | 'recus' (reçus d'amis), i}
+// niveaux perso (créations du joueur, niveaux reçus) gardés sur l'appareil
+const persoKey = k => k === 'mine' ? 'orbite-perso' : 'orbite-recus';
+function persoList(k) { try { const a = JSON.parse(localStorage.getItem(persoKey(k)) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function persoSave(k, arr) { try { localStorage.setItem(persoKey(k), JSON.stringify(arr, (key, v) => key === '_B' ? undefined : v)); } catch (e) {} }
+const levelTitle = () => playCtx ? (L.name || 'Niveau perso') : `Niveau ${lvl + 1}/${LV.length}`;
 let shipKind = 'fusee', updState = ''; // vaisseau choisi ; état de la vérification des mises à jour
 try { shipKind = localStorage.getItem('orbite-vaisseau') || 'fusee'; } catch (e) {}
 
@@ -81,15 +87,14 @@ function resize() {
   const cs = getComputedStyle(safeEl);
   safeTop = parseFloat(cs.paddingTop) || 0;
   safeBot = parseFloat(cs.paddingBottom) || 0;
-  // bandeau de commande compact, collé au bas de l'écran (au-dessus de la barre d'accueil de l'iPhone)
-  const band = Math.max(160, Math.min(205, H * 0.23));
-  bandTop = H - band - safeBot;
+  // le jeu occupe tout l'écran, bords compris ; les commandes se superposent en bas, collées au bord
+  ctrl.r = Math.max(54, Math.min(72, W * 0.19));
+  ctrl.x = W / 2; ctrl.y = H - Math.max(safeBot, 6) - ctrl.r - 4;
+  bandTop = ctrl.y - ctrl.r - 30; // haut de la zone des commandes
   gameH = bandTop - safeTop;
-  scale = Math.min(W / WORLD_W, gameH / WORLD_H);
+  scale = Math.min(W / WORLD_W, (H - safeTop) / WORLD_H);
   ox = (W - WORLD_W * scale) / 2;
-  oy = safeTop + (gameH - WORLD_H * scale) / 2;
-  ctrl.r = Math.min((band - 46) / 2, W * 0.28);
-  ctrl.x = W / 2; ctrl.y = H - safeBot - ctrl.r - 8;
+  oy = safeTop + (H - safeTop - WORLD_H * scale) / 2;
   homeTex = paintBody({ type: 'terre' }, Math.min(W * 0.75, 340) * dpr, 4242);
   bgStars = [];
   for (let i = 0; i < 160; i++) bgStars.push({ x: Math.random() * W, y: Math.random() * H, a: 0.15 + Math.random() * 0.45, s: Math.random() < 0.15 ? 1.6 : 1 });
@@ -458,7 +463,10 @@ function lose(why) {
 function win() {
   const fuelPct = fuel / L.fuel * 100;
   const got = [true, fuelPct >= 50, elapsed <= L.time];
-  if (!testMode) {
+  if (playCtx) { // étoiles d'un niveau perso : gardées avec le niveau
+    const list = persoList(playCtx.kind), lv = list[playCtx.i];
+    if (lv) { lv.stars = (lv.stars || [false, false, false]).map((v, k) => v || got[k]); L.stars = lv.stars; persoSave(playCtx.kind, list); }
+  } else if (!testMode) {
     const prev = medals[lvl] || [false, false, false];
     medals[lvl] = prev.map((v, k) => v || got[k]);
     try { localStorage.setItem('orbite-medailles', JSON.stringify(medals)); } catch (e) {}
@@ -501,6 +509,8 @@ function runPlan() {
 
 function runHelp() {
   if (helpRes || helpJob) return;
+  // niveau reçu d'un ami : pas de solveur, seulement la solution s'il l'a envoyée
+  if (playCtx && playCtx.kind === 'recus' && !L.hint) { helpRes = { fail: true, locked: true }; return; }
   if (L.hint) {
     const r = fly(L, L.hint, null);
     if (r.ok) { helpRes = { used: r.used, path: r.path }; return; }
@@ -540,6 +550,7 @@ const editorBtn = () => homeLayout().editor;
 function clearProgress() {
   confirmBox('Effacer toute ta progression (étoiles et niveau atteint) ?', () => {
     medals = {}; lvl = 0;
+    for (const k of ['mine', 'recus']) { const a = persoList(k); a.forEach(l => delete l.stars); persoSave(k, a); }
     try { localStorage.removeItem('orbite-medailles'); localStorage.removeItem('orbite-niveau'); } catch (e) {}
   });
 }
@@ -583,6 +594,7 @@ const inBox = (e, b) => e.clientX >= b.x && e.clientX <= b.x + b.w && e.clientY 
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (screen === 'editor') { editorPointerDown(e); return; }
+  if (screen === 'perso') return;
   if (screen === 'home') {
     if (inBox(e, playBtn())) { loadLevel(lvl); screen = 'game'; }
     else if (inBox(e, levelsBtn())) screen = 'levels';
@@ -601,15 +613,15 @@ cv.addEventListener('pointerdown', e => {
     if (k >= 0) { loadLevel(k); screen = 'game'; }
     return;
   }
-  if (inBox(e, menuBtn())) { cancelJobs(); if (testMode) backToEditor(); else screen = 'levels'; return; }
-  if (inBox(e, restartBtn())) { loadLevel(lvl, testMode ? L : undefined); return; }
+  if (inBox(e, menuBtn())) { cancelJobs(); if (testMode) backToEditor(); else if (playCtx) openPerso(); else screen = 'levels'; return; }
+  if (inBox(e, restartBtn())) { loadLevel(lvl, testMode || playCtx ? L : undefined); return; }
   if (state === 'won') {
     if (stateT < 0.6) return;
-    if (inBox(e, replayBtn())) loadLevel(lvl, testMode ? L : undefined);
-    else if (inBox(e, nextBtn())) { if (testMode) backToEditor(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
+    if (inBox(e, replayBtn())) loadLevel(lvl, testMode || playCtx ? L : undefined);
+    else if (inBox(e, nextBtn())) { if (testMode) backToEditor(); else if (playCtx) openPerso(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
     return;
   }
-  if (state !== 'play') { if (stateT >= 0.6) loadLevel(lvl, testMode ? L : undefined); return; }
+  if (state !== 'play') { if (stateT >= 0.6) loadLevel(lvl, testMode || playCtx ? L : undefined); return; }
   // avant le lancement : un appui sur une icône de statut l'explique
   if (!departed) {
     const ii = statusIcons().findIndex(b => inBox(e, b));
@@ -794,7 +806,7 @@ function drawHome() {
   button(hl.play, lvl > 0 ? `Continuer · niveau ${lvl + 1}` : 'Jouer', true);
   button(hl.levels, 'Niveaux', false);
   ctx.font = `500 13px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.textAlign = 'center';
-  ctx.fillText('Éditeur de niveaux', hl.editor.x + hl.editor.w / 2, hl.editor.y + hl.editor.h / 2);
+  ctx.fillText('Niveaux perso · créer et partager', hl.editor.x + hl.editor.w / 2, hl.editor.y + hl.editor.h / 2);
   ctx.font = `400 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.5)';
   ctx.fillText('Effacer ma progression', hl.clear.x + hl.clear.w / 2, hl.clear.y + hl.clear.h / 2);
   ctx.fillText(updState || `Mises à jour · v${APP_VERSION}`, hl.update.x + hl.update.w / 2, hl.update.y + hl.update.h / 2);
@@ -820,6 +832,7 @@ function drawLevels() {
 
 function draw() {
   if (screen === 'editor') { editorDraw(); return; }
+  if (screen === 'perso') { drawBackdrop(); return; }
   if (screen === 'home') { drawHome(); return; }
   if (screen === 'levels') { drawLevels(); return; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -827,7 +840,7 @@ function draw() {
 
   // zone de jeu
   ctx.save();
-  ctx.beginPath(); ctx.rect(0, 0, W, bandTop); ctx.clip();
+  ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();
   for (const s of bgStars) { ctx.fillStyle = `rgba(255,255,255,${s.a})`; ctx.fillRect(s.x, s.y, s.s, s.s); }
   ctx.translate(ox, oy); ctx.scale(scale, scale);
   const lw = 1.5 / scale, t = performance.now() / 1000;
@@ -903,6 +916,7 @@ function draw() {
   }
   if (showHelp && !departed) {
     if (helpJob) label(`Recherche d’une solution… ${Math.round(helpJob.progress * 100)} %`, W / 2, bandTop - 80);
+    else if (helpRes && helpRes.locked) label('Solution non partagée : demande-la à ton ami', W / 2, bandTop - 80);
     else if (!helpRes || helpRes.fail) label('Aucune solution trouvée', W / 2, bandTop - 80);
   }
 
@@ -916,6 +930,7 @@ function draw() {
 
   // bandeau de commande (cercle en pointillés légers)
   ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5; ctx.setLineDash([2, 6]);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.fill(); // voile léger sous la commande
   ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
   const th = state === 'play' ? curTh : null;
   if (th) {
@@ -1008,9 +1023,9 @@ function draw() {
   ctx.font = `600 15px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.font = `400 28px ${FONT}`; ctx.fillText('\u2039', 12, hy - 2); // retour à la liste des niveaux
   ctx.font = `600 15px ${FONT}`;
-  ctx.fillText(`Niveau ${lvl + 1}/${LV.length}`, 34, hy);
+  ctx.fillText(levelTitle(), 34, hy, W - 210);
   if (departed) {
-    const lw0 = ctx.measureText(`Niveau ${lvl + 1}/${LV.length}`).width + 20;
+    const lw0 = Math.min(W - 210, ctx.measureText(levelTitle()).width) + 20;
     ctx.font = `400 14px ${FONT}`; ctx.fillStyle = elapsed > L.time ? 'rgba(255,255,255,0.5)' : '#fff';
     ctx.fillText(`· ${fmt(elapsed)} s`, 14 + lw0 + 6, hy);
     ctx.fillStyle = '#fff';
@@ -1036,7 +1051,7 @@ function draw() {
     ctx.fillText(txt, 14, hy + 28 + i * 18);
   });
   // objectifs bonus (★ déjà obtenu)
-  const md = medals[lvl] || [false, false, false];
+  const md = (playCtx ? L.stars : medals[lvl]) || [false, false, false];
   ctx.font = `400 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.6)';
   ctx.fillText(`${md[1] ? '★' : '☆'} Gaz ≥ 50 %   ${md[2] ? '★' : '☆'} Chrono ≤ ${L.time} s`, 14, hy + 28 + L.steps.length * 18);
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
@@ -1049,7 +1064,7 @@ function draw() {
     if (state === 'won') {
       ctx.font = `700 26px ${FONT}`; ctx.fillText('Mission accomplie !', W / 2, my - 86);
       ctx.font = `400 14px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.7)';
-      ctx.fillText(`Niveau ${lvl + 1} · ${L.name}`, W / 2, my - 58);
+      ctx.fillText(playCtx ? `Niveau perso · ${L.name}` : `Niveau ${lvl + 1} · ${L.name}`, W / 2, my - 58);
       const rows = [
         [result.got[0], 'Mission terminée'],
         [result.got[1], `Gaz restant ${Math.round(result.fuelPct)} % (objectif 50 %)`],
@@ -1058,7 +1073,7 @@ function draw() {
       ctx.font = `500 15px ${FONT}`;
       rows.forEach(([ok, s], k) => { ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.45)'; ctx.fillText(`${ok ? '★' : '☆'}  ${s}`, W / 2, my - 18 + k * 30); });
       button(replayBtn(), 'Rejouer', false);
-      button(nextBtn(), testMode ? 'Éditeur' : lvl + 1 < LV.length ? 'Suivant' : 'Niveau 1', true);
+      button(nextBtn(), testMode ? 'Éditeur' : playCtx ? 'Mes niveaux' : lvl + 1 < LV.length ? 'Suivant' : 'Niveau 1', true);
     } else {
       ctx.font = `700 26px ${FONT}`; ctx.fillText(msg, W / 2, my - 14);
       ctx.font = `400 15px ${FONT}`; ctx.fillText(sub, W / 2, my + 20);

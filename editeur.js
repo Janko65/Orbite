@@ -1,4 +1,7 @@
-// Orbite — éditeur de niveaux
+// Orbite — niveaux perso et éditeur
+// Les joueurs créent leurs propres niveaux (vierges ou à partir d'un niveau officiel), les partagent par un code
+// à copier-coller (sans la solution), puis peuvent envoyer la solution plus tard. Les 20 niveaux officiels ne se
+// modifient qu'en mode développeur (mot de passe), qui permet aussi d'exporter niveaux.js.
 // Carte déplaçable et zoomable au doigt, placement des astres par glisser (y compris hors de l'écran de jeu),
 // taille, gravité, couleurs, anneaux, étoiles, lunes en orbite, ceintures d'astéroïdes, départ, objectifs,
 // solveur intégré (gaz, chrono, solution conseillée), test, publication sur l'appareil et export de niveaux.js.
@@ -7,7 +10,8 @@ const BODY_TYPES = ['terre', 'lune', 'mars', 'mercure', 'venus', 'jupiter', 'sat
 const TYPE_LABEL = { terre: 'Terre', lune: 'Lune', mars: 'Mars', mercure: 'Mercure', venus: 'Vénus', jupiter: 'Jupiter', saturne: 'Saturne', uranus: 'Uranus', neptune: 'Neptune', perso: 'Personnalisée', soleil: 'Soleil (étoile)' };
 const STYLES = { roche: 'Rocheuse', gaz: 'Gazeuse', ocean: 'Océan', glace: 'Glace' };
 
-const ED = { levels: [], cur: 0, sel: null, tab: 'astre', drag: null, solve: null, showHint: true, hintCache: null, top: 0,
+const DEV_PASSWORD = 'admin'; // mode développeur : modifier les niveaux officiels et exporter niveaux.js
+const ED = { mode: 'perso', levels: [], cur: 0, sel: null, tab: 'astre', drag: null, solve: null, showHint: true, hintCache: null, top: 0,
   mapBottom: 0, view: null, fold: false, ptrs: new Map(), pinch: null };
 
 // ===== Styles et éléments =====
@@ -77,16 +81,37 @@ function modal(build) {
   return close;
 }
 
-// ===== Accès (direct, sans mot de passe) =====
-function openEditorLogin() { openEditor(); }
+// ===== Accès =====
+// depuis l'accueil : l'écran des niveaux perso
+function openEditorLogin() { openPerso(); }
 
-function openEditor() {
-  let draft = null;
-  try { draft = JSON.parse(localStorage.getItem('orbite-brouillon') || 'null'); } catch (e) {}
-  ED.levels = Array.isArray(draft) && draft.length ? draft : JSON.parse(JSON.stringify(LV));
-  ED.cur = Math.min(ED.cur, ED.levels.length - 1);
+// mode développeur (niveaux officiels) : protégé par mot de passe
+function openDevLogin() {
+  modal((box, close) => {
+    const inp = el('input', { type: 'password', placeholder: 'Mot de passe', autocomplete: 'off' });
+    const err = el('div', { class: 'hint' }, 'Modifier les niveaux officiels et exporter niveaux.js.');
+    const go = () => { if (inp.value === DEV_PASSWORD) { close(); closePerso(); openEditor('dev'); } else { err.textContent = 'Mot de passe incorrect.'; err.className = 'ko'; } };
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+    box.append(el('h3', {}, 'Mode développeur'), inp, err,
+      el('div', { class: 'row' }, el('button', { onclick: close, style: 'flex:1' }, 'Annuler'), el('button', { class: 'pri', onclick: go, style: 'flex:1' }, 'Entrer')));
+    setTimeout(() => inp.focus(), 50);
+  });
+}
+
+// mode 'perso' : les créations du joueur ; mode 'dev' : brouillon des niveaux officiels
+function openEditor(mode = 'perso', idx) {
+  ED.mode = mode;
+  if (mode === 'dev') {
+    let draft = null;
+    try { draft = JSON.parse(localStorage.getItem('orbite-brouillon') || 'null'); } catch (e) {}
+    ED.levels = Array.isArray(draft) && draft.length ? draft : JSON.parse(JSON.stringify(LV));
+  } else {
+    ED.levels = persoList('mine');
+    if (!ED.levels.length) { ED.levels.push(newLevel()); persoSave('mine', ED.levels); }
+  }
+  ED.cur = Math.max(0, Math.min(idx ?? ED.cur, ED.levels.length - 1));
   ED.sel = null; ED.tab = 'astre'; ED.view = null;
-  testMode = false; cancelJobs();
+  testMode = false; playCtx = null; cancelJobs();
   screen = 'editor';
   buildUI();
   selectLevel(ED.cur);
@@ -97,8 +122,9 @@ function closeEditor() {
   document.getElementById('edTop')?.remove();
   document.getElementById('edPanel')?.remove();
   document.getElementById('edCenter')?.remove();
-  screen = 'home'; testMode = false;
-  resize();
+  testMode = false;
+  screen = 'home'; resize(); // retour à la mise en page du jeu
+  if (ED.mode === 'perso') openPerso();
 }
 
 // retour depuis un test
@@ -110,13 +136,16 @@ function backToEditor() {
 }
 
 const EL = () => ED.levels[ED.cur];
-const saveDraft = () => { try { localStorage.setItem('orbite-brouillon', JSON.stringify(ED.levels, (k, v) => k === '_B' ? undefined : v)); } catch (e) {} };
+const saveDraft = () => {
+  if (ED.mode === 'perso') persoSave('mine', ED.levels);
+  else try { localStorage.setItem('orbite-brouillon', JSON.stringify(ED.levels, (k, v) => k === '_B' ? undefined : v)); } catch (e) {}
+};
 
 // toute modification : la solution conseillée n'est plus valable, le niveau est à recalibrer
 function changed(retexture) {
   const Lv = EL();
   invalidate(Lv);
-  delete Lv.hint; Lv.dirty = true;
+  delete Lv.hint; delete Lv.stars; Lv.dirty = true;
   ED.hintCache = null;
   if (retexture) { clearTimeout(changed.t); changed.t = setTimeout(buildTextures, 120); }
   saveDraft();
@@ -158,7 +187,7 @@ function buildUI() {
   document.getElementById('edTop')?.remove();
   document.getElementById('edPanel')?.remove();
   const top = el('div', { id: 'edTop', class: 'ed' },
-    el('button', { onclick: closeEditor }, '‹ Quitter'),
+    el('button', { onclick: closeEditor }, ED.mode === 'dev' ? '‹ Quitter' : '‹ Mes niveaux'),
     el('select', { id: 'edLevel', onchange: e => selectLevel(+e.target.value) }),
     el('button', { onclick: openMenu }, 'Menu'));
   const panel = el('div', { id: 'edPanel', class: 'ed' },
@@ -402,28 +431,57 @@ function testLevel() {
   loadLevel(ED.cur, Lv);
 }
 
-// ===== Menu : niveaux, publication, export =====
+// ===== Menu =====
 function openMenu() {
   modal((box, close) => {
     const Lv = EL(), act = fn => () => { close(); fn(); };
+    const dup = () => { const c = JSON.parse(JSON.stringify(Lv, (k, v) => (k === '_B' || k === 'stars') ? undefined : v)); c.name = (c.name || '') + ' (copie)'; ED.levels.splice(ED.cur + 1, 0, c); saveDraft(); selectLevel(ED.cur + 1); };
+    const del = () => confirmBox(`Supprimer « ${Lv.name || 'Sans nom'} » ?`, () => { ED.levels.splice(ED.cur, 1); if (!ED.levels.length) ED.levels.push(newLevel()); saveDraft(); selectLevel(Math.min(ED.cur, ED.levels.length - 1)); });
+    if (ED.mode === 'perso') {
+      box.append(el('h3', {}, 'Menu'), el('div', { class: 'menu' },
+        el('button', { onclick: act(chooseTemplate) }, 'Nouveau niveau'),
+        el('button', { onclick: act(dup) }, 'Dupliquer ce niveau'),
+        el('button', { class: 'pri', onclick: act(() => shareLevel(Lv)) }, 'Partager ce niveau'),
+        el('button', { onclick: act(() => shareSolution(Lv)) }, 'Partager la solution'),
+        el('button', { class: 'dan', onclick: act(del) }, 'Supprimer ce niveau'),
+        el('button', { onclick: close }, 'Fermer')));
+      return;
+    }
     const todo = ED.levels.filter(l => l.dirty || !l.hint).length;
-    box.append(el('h3', {}, 'Menu'), el('div', { class: 'menu' },
+    box.append(el('h3', {}, 'Mode développeur'), el('div', { class: 'menu' },
       el('button', { onclick: act(() => { ED.levels.push(newLevel()); saveDraft(); selectLevel(ED.levels.length - 1); }) }, 'Nouveau niveau'),
-      el('button', { onclick: act(() => { const c = JSON.parse(JSON.stringify(Lv, (k, v) => k === '_B' ? undefined : v)); c.name = (c.name || '') + ' (copie)'; ED.levels.splice(ED.cur + 1, 0, c); saveDraft(); selectLevel(ED.cur + 1); }) }, 'Dupliquer ce niveau'),
+      el('button', { onclick: act(dup) }, 'Dupliquer ce niveau'),
       el('div', { class: 'row' },
         el('button', { style: 'flex:1', disabled: ED.cur === 0, onclick: act(() => moveLevel(-1)) }, 'Monter'),
         el('button', { style: 'flex:1', disabled: ED.cur === ED.levels.length - 1, onclick: act(() => moveLevel(1)) }, 'Descendre')),
-      el('button', { class: 'dan', disabled: ED.levels.length <= 1, onclick: act(() => confirmBox(`Supprimer le niveau ${ED.cur + 1} ?`, () => { ED.levels.splice(ED.cur, 1); saveDraft(); selectLevel(Math.min(ED.cur, ED.levels.length - 1)); })) }, 'Supprimer ce niveau'),
+      el('button', { class: 'dan', disabled: ED.levels.length <= 1, onclick: act(del) }, 'Supprimer ce niveau'),
       el('div', { class: 'hint' }, todo ? `${todo} niveau${todo > 1 ? 'x' : ''} à recalibrer (•) avant de publier.` : 'Tous les niveaux sont calibrés.'),
       el('button', { class: 'pri', onclick: act(publish) }, 'Publier sur cet appareil'),
       el('button', { onclick: act(exportLevels) }, 'Exporter niveaux.js'),
-      el('button', { onclick: act(() => confirmBox('Abandonner le brouillon et repartir des niveaux publiés ?', () => { localStorage.removeItem('orbite-brouillon'); openEditor(); })) }, 'Annuler les modifications'),
+      el('button', { onclick: act(() => confirmBox('Abandonner le brouillon et repartir des niveaux publiés ?', () => { localStorage.removeItem('orbite-brouillon'); openEditor('dev'); })) }, 'Annuler les modifications'),
       el('button', { onclick: close }, 'Fermer')));
   });
 }
 
+// nouveau niveau perso : vierge ou à partir d'un niveau officiel (copie, l'original n'est jamais modifié)
+function chooseTemplate() {
+  modal((box, close) => {
+    const pick = src => {
+      close();
+      const c = src ? JSON.parse(JSON.stringify(src, (k, v) => ['_B', 'hint', 'fuel', 'time', 'stars', 'margins'].includes(k) ? undefined : v)) : newLevel();
+      c.name = src ? `${src.name} (perso)` : 'Mon niveau'; c.dirty = true;
+      if (screen === 'editor' && ED.mode === 'perso') { ED.levels.push(c); saveDraft(); selectLevel(ED.levels.length - 1); }
+      else { const mine = persoList('mine'); mine.push(c); persoSave('mine', mine); closePerso(); openEditor('perso', mine.length - 1); }
+    };
+    const list = el('div', { class: 'menu', style: 'max-height:50vh;overflow-y:auto' },
+      el('button', { class: 'pri', onclick: () => pick(null) }, 'Niveau vierge'),
+      LEVELS.map((l, i) => el('button', { onclick: () => pick(l) }, `${i + 1}. ${l.name}`)));
+    box.append(el('h3', {}, 'Nouveau niveau'), el('div', { class: 'hint' }, 'Partir de zéro ou d’un niveau officiel comme modèle.'), list, el('button', { onclick: close }, 'Annuler'));
+  });
+}
+
 function newLevel() {
-  return { name: 'Nouveau niveau', planets: [{ type: 'terre', x: 500, y: 1400, r: 100 }, { type: 'mars', x: 500, y: 500, r: 80 }], start: { p: 0, a: -1.5708 }, steps: [{ type: 'land', p: 1 }], dirty: true };
+  return { name: 'Nouveau niveau', planets: [{ type: 'terre', x: 500, y: 1500, r: 100 }, { type: 'mars', x: 500, y: 600, r: 80 }], start: { p: 0, a: -1.5708 }, steps: [{ type: 'land', p: 1 }], dirty: true };
 }
 function moveLevel(d) {
   const i = ED.cur, j = i + d;
@@ -470,6 +528,142 @@ function exportLevels() {
           catch (err) { msg.textContent = 'Téléchargement impossible ici : utilise Copier.'; }
         } }, 'Télécharger'),
         el('button', { style: 'flex:1', onclick: close }, 'Fermer')));
+  });
+}
+
+// ===== Écran « Niveaux perso » =====
+function closePerso() { document.getElementById('persoScr')?.remove(); }
+
+function openPerso() {
+  closePerso();
+  cancelJobs(); testMode = false; playCtx = null;
+  screen = 'perso';
+  const mine = persoList('mine'), recus = persoList('recus');
+  const stars = l => { const st = l.stars || [false, false, false]; return el('span', { style: 'color:#ffd60a;letter-spacing:2px' }, st.map(v => v ? '★' : '☆').join('')); };
+  const card = (title, sub, btns) => el('div', { class: 'step', style: 'flex-direction:column;align-items:stretch;gap:8px' },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', { style: 'width:auto' }, title), sub), el('div', { class: 'row wrap' }, btns));
+  const play = (kind, i) => () => {
+    closePerso();
+    playCtx = { kind, i }; testMode = false; screen = 'game';
+    resize(); loadLevel(0, persoList(kind)[i]);
+  };
+  const scr = el('div', { id: 'persoScr', class: 'ed', style: 'top:0;bottom:0;overflow-y:auto;padding:calc(env(safe-area-inset-top) + 10px) 14px calc(env(safe-area-inset-bottom) + 20px);background:rgba(0,0,0,.82);display:flex;flex-direction:column;gap:10px' },
+    el('div', { class: 'row' }, el('button', { onclick: () => { closePerso(); screen = 'home'; } }, '‹ Accueil'), el('h3', { style: 'margin:0;flex:1;text-align:center;font-size:20px' }, 'Niveaux perso'), el('span', { style: 'width:90px' })),
+    el('div', { class: 'row wrap' },
+      el('button', { class: 'pri', onclick: () => chooseTemplate() }, '+ Créer un niveau'),
+      el('button', { onclick: pasteCode }, 'Coller un code reçu')),
+    el('h3', { style: 'margin:8px 0 0;font-size:16px' }, 'Mes créations'),
+    mine.length ? mine.map((l, i) => card(l.name || 'Sans nom', l.dirty || !l.hint ? el('span', { class: 'hint' }, 'à calibrer (solveur)') : stars(l), [
+      el('button', { onclick: play('mine', i) }, 'Jouer'),
+      el('button', { onclick: () => { closePerso(); openEditor('perso', i); } }, 'Modifier'),
+      el('button', { onclick: () => shareLevel(l) }, 'Partager'),
+      el('button', { onclick: () => shareSolution(l) }, 'Solution'),
+    ])) : el('div', { class: 'hint' }, 'Aucune création pour l’instant.'),
+    el('h3', { style: 'margin:8px 0 0;font-size:16px' }, 'Niveaux reçus'),
+    recus.length ? recus.map((l, i) => card(l.name || 'Sans nom', stars(l), [
+      el('button', { onclick: play('recus', i) }, 'Jouer'),
+      el('span', { class: 'hint', style: 'flex:1 1 auto;align-self:center' }, l.hint ? 'solution reçue : aide « ? » disponible' : 'sans solution'),
+      el('button', { class: 'dan', onclick: () => confirmBox(`Supprimer « ${l.name || 'Sans nom'} » ?`, () => { const r = persoList('recus'); r.splice(i, 1); persoSave('recus', r); openPerso(); }) }, 'Supprimer'),
+    ])) : el('div', { class: 'hint' }, 'Colle ici les codes de niveaux envoyés par tes amis.'),
+    el('button', { style: 'margin-top:16px;background:none;border:0;color:rgba(255,255,255,.45);font-weight:400', onclick: openDevLogin }, 'Mode développeur (niveaux officiels)'));
+  document.body.append(scr);
+}
+
+// ===== Partage par code (copier-coller dans un message) =====
+const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
+// ce qui part avec le niveau : tout sauf la solution
+const sharePayload = l => JSON.parse(JSON.stringify({ name: l.name || 'Niveau perso', planets: l.planets, start: l.start, steps: l.steps, belts: l.belts, fuel: l.fuel, time: l.time }, (k, v) => k === '_B' ? undefined : v));
+
+function shareBox(title, text, note) {
+  modal((box, close) => {
+    const ta = el('textarea', { value: text, readOnly: true });
+    const msg = el('div', { class: 'hint' }, note);
+    box.append(el('h3', {}, title), msg, ta, el('div', { class: 'row', style: 'flex-wrap:wrap' },
+      navigator.share ? el('button', { class: 'pri', style: 'flex:1 1 100%', onclick: () => navigator.share({ text }).catch(() => {}) }, 'Envoyer…') : null,
+      el('button', { style: 'flex:1', onclick: () => { navigator.clipboard?.writeText(text).then(() => { msg.textContent = 'Copié : colle-le dans un message.'; }, () => { ta.select(); msg.textContent = 'Sélectionne le texte et copie-le.'; }); } }, 'Copier'),
+      el('button', { style: 'flex:1', onclick: close }, 'Fermer')));
+  });
+}
+
+function shareLevel(l) {
+  if (l.dirty || !l.hint) { alertBox('Lance d’abord le solveur (onglet Solveur) : il vérifie que ton niveau est faisable et fixe le gaz et le chrono.'); return; }
+  const code = 'ORBITE-N1:' + b64e(JSON.stringify(sharePayload(l)));
+  shareBox('Partager ce niveau', `Défi Orbite : « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Niveaux perso → Coller un code reçu.\n${code}`,
+    'Le niveau part sans sa solution. Tu pourras l’envoyer plus tard avec « Solution ».');
+}
+
+function shareSolution(l) {
+  if (l.dirty || !l.hint) { alertBox('Pas encore de solution : lance d’abord le solveur.'); return; }
+  const code = 'ORBITE-S1:' + b64e(JSON.stringify({ sig: levelSig(sharePayload(l)), hint: l.hint }));
+  shareBox('Partager la solution', `Solution Orbite pour « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Niveaux perso → Coller un code reçu.\n${code}`,
+    'Ton ami pourra afficher la trajectoire conseillée avec l’aide « ? ».');
+}
+
+// vérifie et nettoie un niveau reçu (on n'accepte que des champs connus, aux bonnes valeurs)
+function sanitizeLevel(o) {
+  const num = (v, lo, hi) => { if (typeof v !== 'number' || !isFinite(v)) throw 0; return Math.max(lo, Math.min(hi, v)); };
+  const int = (v, n) => { if (!Number.isInteger(v) || v < 0 || v >= n) throw 0; return v; };
+  const hex = v => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : undefined;
+  const str = (v, n) => typeof v === 'string' ? v.slice(0, n) : undefined;
+  if (!o || !Array.isArray(o.planets) || !o.planets.length || o.planets.length > 30 || !Array.isArray(o.steps) || !o.steps.length || o.steps.length > 10) throw 0;
+  const n = o.planets.length;
+  const planets = o.planets.map(p => {
+    if (!BODY_TYPES.includes(p.type)) throw 0;
+    const q = { type: p.type, x: num(p.x, -5000, 6000), y: num(p.y, -5000, 7000), r: num(p.r, 5, 600) };
+    if (p.g !== undefined) q.g = num(p.g, 0.1, 5);
+    if (p.type === 'soleil' || p.star) q.star = true;
+    if (p.orbit) q.orbit = { p: int(p.orbit.p, n), d: num(p.orbit.d, 10, 5000), a0: num(p.orbit.a0, -100, 100), dir: p.orbit.dir === -1 ? -1 : 1 };
+    if (p.ring === false) q.ring = false; else if (p.ring === true) q.ring = true; else if (hex(p.ring)) q.ring = hex(p.ring);
+    if (hex(p.tint)) { q.tint = hex(p.tint); if (p.shade !== undefined) q.shade = num(p.shade, 0, 1); }
+    if (hex(p.color)) q.color = hex(p.color);
+    if (STYLES[p.style]) q.style = p.style;
+    if (str(p.name, 30)) q.name = str(p.name, 30);
+    return q;
+  });
+  planets.forEach((p, i) => { if (p.orbit && (p.orbit.p === i || planets[p.orbit.p].orbit)) throw 0; });
+  const steps = o.steps.map(s => {
+    if (s.type === 'zone') return { type: 'zone', x: num(s.x, -5000, 6000), y: num(s.y, -5000, 7000), r: num(s.r, 10, 500) };
+    if (s.type === 'land') return { type: 'land', p: int(s.p, n) };
+    if (s.type === 'orbit') return { type: 'orbit', p: int(s.p, n), n: Math.round(num(s.n, 1, 5)) };
+    throw 0;
+  });
+  const sp = int(o.start && o.start.p, n);
+  if (planets[sp].star || planets[sp].orbit) throw 0;
+  const lv = { name: str(o.name, 40) || 'Niveau reçu', planets, start: { p: sp, a: num(o.start.a, -10, 10) }, steps, fuel: num(o.fuel, 0.1, 500), time: num(o.time, 1, 2000) };
+  if (Array.isArray(o.belts) && o.belts.length) lv.belts = o.belts.slice(0, 10).map(b => ({ p: int(b.p, n), r: num(b.r, 10, 3000), w: num(b.w, 2, 400) }));
+  return lv;
+}
+
+function importCode(text) {
+  const m = /ORBITE-([NS])1:([A-Za-z0-9_-]+)/.exec(text || '');
+  if (!m) return 'Aucun code Orbite trouvé dans ce texte.';
+  let data;
+  try { data = JSON.parse(b64d(m[2])); } catch (e) { return 'Code abîmé : vérifie que tout le message a été copié.'; }
+  const recus = persoList('recus');
+  if (m[1] === 'N') {
+    let lv;
+    try { lv = sanitizeLevel(data); } catch (e) { return 'Ce niveau n’est pas valide.'; }
+    const sig = levelSig(lv);
+    if (recus.some(r => levelSig(sharePayload(r)) === sig)) return `« ${lv.name} » est déjà dans tes niveaux reçus.`;
+    recus.push(lv); persoSave('recus', recus);
+    return `Niveau « ${lv.name} » ajouté. Bonne chance !`;
+  }
+  const k = recus.findIndex(r => levelSig(sharePayload(r)) === data.sig);
+  if (k < 0) return 'Cette solution ne correspond à aucun de tes niveaux reçus : colle d’abord le niveau.';
+  if (!data.hint || typeof data.hint !== 'object') return 'Solution abîmée.';
+  recus[k].hint = data.hint; persoSave('recus', recus);
+  return `Solution reçue pour « ${recus[k].name} » : l’aide « ? » montre maintenant la trajectoire conseillée.`;
+}
+
+function pasteCode() {
+  modal((box, close) => {
+    const ta = el('textarea', { placeholder: 'Colle ici le message reçu (niveau ou solution)', style: 'min-height:120px' });
+    const msg = el('div', { class: 'hint' });
+    box.append(el('h3', {}, 'Coller un code reçu'), ta, msg, el('div', { class: 'row', style: 'flex-wrap:wrap' },
+      navigator.clipboard?.readText ? el('button', { style: 'flex:1 1 100%', onclick: () => navigator.clipboard.readText().then(t => { ta.value = t; }, () => { msg.textContent = 'Colle le texte à la main dans la case.'; }) }, 'Coller le presse-papiers') : null,
+      el('button', { style: 'flex:1', onclick: close }, 'Fermer'),
+      el('button', { class: 'pri', style: 'flex:1', onclick: () => { const r = importCode(ta.value); msg.textContent = r; if (/ajouté|Solution reçue/.test(r)) setTimeout(() => { close(); openPerso(); }, 900); } }, 'Ajouter')));
   });
 }
 
