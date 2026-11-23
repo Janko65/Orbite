@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 33; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 35; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -538,13 +538,25 @@ function keyThrust() {
   return d ? { x: x / d, y: y / d, p: 1 } : null;
 }
 
+// mode fixe : la commande est dans le repère du vaisseau (son nez = le haut du cercle)
+const toShip = (v, sgn) => {
+  const a = sgn * (ship.ang + Math.PI / 2), c = Math.cos(a), s = Math.sin(a);
+  return { x: v.x * c - v.y * s, y: v.x * s + v.y * c, p: v.p };
+};
 function thrustInput() {
   if (state !== 'play') return null;
-  if (!touch) return keys.size ? keyThrust() : null;
-  const dx = touch.x - ctrl.x, dy = touch.y - ctrl.y, d = Math.hypot(dx, dy);
-  if (d < ctrl.r * 0.12) return null;
-  // doigt à droite → gaz éjecté à droite → poussée vers la gauche
-  return { x: -dx / d, y: -dy / d, p: Math.min(1, d / ctrl.r) };
+  let v = null;
+  if (!touch) v = keys.size ? keyThrust() : null;
+  else {
+    const dx = touch.x - ctrl.x, dy = touch.y - ctrl.y, d = Math.hypot(dx, dy);
+    if (d < ctrl.r * 0.12) return null;
+    // doigt à droite → gaz éjecté à droite → poussée vers la gauche
+    v = { x: -dx / d, y: -dy / d, p: Math.min(1, d / ctrl.r) };
+  }
+  if (!v || !fixedNorth) return v;
+  // mode fixe : 4 directions seulement (avant, arrière, gauche, droite), la puissance est conservée
+  v = Math.abs(v.x) >= Math.abs(v.y) ? { x: Math.sign(v.x), y: 0, p: v.p } : { x: 0, y: Math.sign(v.y), p: v.p };
+  return toShip(v, 1);
 }
 
 // accueil : titre, choix du vaisseau, boutons, liens (effacer la progression, mises à jour)
@@ -972,7 +984,7 @@ function draw() {
   ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5; ctx.setLineDash([2, 6]);
   ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.fill(); // voile léger sous la commande
   ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
-  const th = state === 'play' ? curTh : null;
+  const th = state === 'play' && curTh ? (fixedNorth ? toShip(curTh, -1) : curTh) : null; // jet dessiné du côté du doigt
   if (th) {
     const ex = -th.x, ey = -th.y, ir = ctrl.r * 0.22;
     ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
