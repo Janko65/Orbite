@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 32; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 33; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -53,6 +53,8 @@ function persoSave(k, arr) { try { localStorage.setItem(persoKey(k), JSON.string
 const levelTitle = () => playCtx ? (L.name || 'Niveau perso') : `Niveau ${lvl + 1}/${LV.length}`;
 let shipKind = 'fusee', updState = ''; // vaisseau choisi ; état de la vérification des mises à jour
 try { shipKind = localStorage.getItem('orbite-vaisseau') || 'fusee'; } catch (e) {}
+let fixedNorth = false; // commande : vaisseau orienté comme en vol (boussole) ou toujours vers le nord (fixe)
+try { fixedNorth = localStorage.getItem('orbite-commande') === 'fixe'; } catch (e) {}
 
 try { lvl = Math.min(LV.length - 1, parseInt(localStorage.getItem('orbite-niveau') || '0', 10) || 0); } catch (e) {}
 try { medals = JSON.parse(localStorage.getItem('orbite-medailles') || '{}') || {}; } catch (e) {}
@@ -594,6 +596,7 @@ const helpBtn = () => ({ x: W - 166, y: safeTop + 6, w: 44, h: 44 });
 const validBtn = () => ({ x: W / 2 - 95, y: bandTop - 54, w: 190, h: 40 });
 const replayBtn = () => ({ x: W / 2 - 128, y: H / 2 + 92, w: 120, h: 44 });
 const nextBtn = () => ({ x: W / 2 + 8, y: H / 2 + 92, w: 120, h: 44 });
+const modeBtn = () => ({ x: W - 48, y: ctrl.y - 18, w: 36, h: 36 }); // bascule boussole / fixe, à droite de la commande
 const statusIcons = () => [{ x: 12, y: ctrl.y - 42, w: 36, h: 36 }, { x: 12, y: ctrl.y + 6, w: 36, h: 36 }];
 const TIPS = [
   ['Trajectoire prévue', 'Montre où va le vaisseau sans poussée.'],
@@ -633,6 +636,7 @@ cv.addEventListener('pointerdown', e => {
     else if (inBox(e, nextBtn())) { if (testMode) backToEditor(); else if (playCtx) openPerso(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
     return;
   }
+  if (state === 'play' && inBox(e, modeBtn())) { fixedNorth = !fixedNorth; try { localStorage.setItem('orbite-commande', fixedNorth ? 'fixe' : 'boussole'); } catch (err) {} return; }
   if (state !== 'play') { if (stateT >= 0.6) loadLevel(lvl, testMode || playCtx ? L : undefined); return; }
   // avant le lancement : un appui sur une icône de statut l'explique
   if (!departed) {
@@ -982,7 +986,7 @@ function draw() {
   }
   const shadowed = state === 'play' && inShadow(B, ship.x, ship.y);
   ctx.globalAlpha = shadowed ? 0.3 : 1;
-  shipPath(ctx, ctrl.x, ctrl.y, ship.ang, ctrl.r * 0.22);
+  shipPath(ctx, ctrl.x, ctrl.y, fixedNorth ? -Math.PI / 2 : ship.ang, ctrl.r * 0.22);
   ctx.fillStyle = '#fff'; ctx.fill(); ctx.globalAlpha = 1;
   ctx.font = `600 12px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
   ctx.fillText(`${Math.round(speed)} m/s`, ctrl.x, ((ctrl.y - ctrl.r * 0.22) + sby) / 2);
@@ -1006,6 +1010,23 @@ function draw() {
     ctx.beginPath(); ctx.arc(x + 5, y - 5, 4, 0, Math.PI * 2); ctx.stroke();
     shipPath(ctx, x - 4, y + 4, -Math.PI / 4, 7); ctx.fill();
   });
+
+  // bascule boussole / fixe : aiguille qui suit le vaisseau, ou vaisseau fixé avec un N
+  {
+    const mx = W - 30, my = ctrl.y;
+    ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(mx, my, 18, 0, Math.PI * 2); ctx.stroke();
+    if (fixedNorth) {
+      shipPath(ctx, mx, my + 3, -Math.PI / 2, 8); ctx.fill();
+      ctx.font = `700 9px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('N', mx, my - 10);
+    } else {
+      const a = ship.ang, cx2 = Math.cos(a), sy2 = Math.sin(a);
+      ctx.beginPath(); ctx.moveTo(mx + cx2 * 12, my + sy2 * 12); ctx.lineTo(mx - sy2 * 4, my + cx2 * 4); ctx.lineTo(mx + sy2 * 4, my - cx2 * 4); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 0.4; ctx.beginPath(); ctx.moveTo(mx - cx2 * 12, my - sy2 * 12); ctx.lineTo(mx - sy2 * 4, my + cx2 * 4); ctx.lineTo(mx + sy2 * 4, my - cx2 * 4); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+    }
+    ctx.font = `600 10px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(fixedNorth ? 'Fixe' : 'Boussole', mx, my + 22);
+  }
 
   // jauge de gravité verticale (bas droite de la zone de jeu) : remplie et rouge = forte gravité, vide et verte = vide spatial
   {
