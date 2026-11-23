@@ -43,13 +43,17 @@ function bodyPos(L, i, t) {
   return [px + c * d, py + s * d, pvx - s * d * w, pvy + c * d * w];
 }
 // position de tous les astres à l'instant t (temps compté depuis le premier jet)
+// B.belts : ceintures d'astéroïdes {x, y, r, w} autour d'une planète ou d'une étoile (jamais d'une lune)
 function snapshot(L, t) {
+  const withBelts = B => { B.belts = (L.belts || []).filter(b => B[b.p]).map(b => ({ x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w })); return B; };
   if (!hasMoons(L)) {
-    if (!L._B) L._B = L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star }));
+    if (!L._B) L._B = withBelts(L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star })));
     return L._B;
   }
-  return L.planets.map((p, i) => { const [x, y, vx, vy] = bodyPos(L, i, t); return { i, x, y, vx, vy, r: p.r, m: bodyMass(p), star: !!p.star }; });
+  return withBelts(L.planets.map((p, i) => { const [x, y, vx, vy] = bodyPos(L, i, t); return { i, x, y, vx, vy, r: p.r, m: bodyMass(p), star: !!p.star }; }));
 }
+// le point touche-t-il une ceinture d'astéroïdes (infranchissable) ?
+const inBelt = (B, x, y) => (B.belts || []).some(b => Math.abs(hyp(x - b.x, y - b.y) - b.r) < b.w / 2 + HULL_R);
 const invalidate = L => { delete L._B; };
 
 function gravity(B, x, y) {
@@ -111,6 +115,7 @@ function physStep(B, s, th, h) {
   let [ax, ay] = gravity(B, s.x, s.y);
   if (th) { ax += th.x * THRUST * th.p; ay += th.y * THRUST * th.p; }
   s.vx += ax * h; s.vy += ay * h; s.x += s.vx * h; s.y += s.vy * h;
+  if (inBelt(B, s.x, s.y)) return { crash: 'belt' };
   let contact = -1;
   for (const b of B) {
     const dx = s.x - b.x, dy = s.y - b.y, d = hyp(dx, dy), min = b.r + HULL_R;
@@ -245,6 +250,7 @@ function predict(L, o) {
     const [ax, ay] = gravity(B, x, y);
     vx += ax * h; vy += ay * h; x += vx * h; y += vy * h;
     if (i % 6 === 0) path.push([x, y]);
+    if (inBelt(B, x, y)) { path.push([x, y]); return { path, hit: { x, y, t: i * h, crash: true } }; }
     for (const p of B) {
       const d = hyp(x - p.x, y - p.y);
       if (d < p.r + HULL_R) {
