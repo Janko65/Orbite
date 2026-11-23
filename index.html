@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 29; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 30; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -550,7 +550,7 @@ function homeLayout() {
   const titleY = safeTop + Math.max(50, H * 0.09), s = Math.min(60, (W - 40 - 4 * 8) / 5), rowY = titleY + 96;
   const tiles = SHIPS.map((_, i) => ({ x: W / 2 - (5 * s + 4 * 8) / 2 + i * (s + 8), y: rowY, w: s, h: s }));
   const playY = rowY + s + 36;
-  return { titleY, tiles, play: { x: W / 2 - 110, y: playY, w: 220, h: 48 }, levels: { x: W / 2 - 110, y: playY + 58, w: 220, h: 48 },
+  return { titleY, tiles, play: { x: W / 2 - 110, y: playY, w: 220, h: 48 }, levels: { x: W / 2 - 110, y: playY + 58, w: 105, h: 48 }, tuto: { x: W / 2 + 5, y: playY + 58, w: 105, h: 48 },
     editor: { x: W / 2 - 90, y: playY + 112, w: 180, h: 36 }, clear: { x: W / 2 - 170, y: playY + 152, w: 165, h: 36 }, update: { x: W / 2 + 5, y: playY + 152, w: 165, h: 36 } };
 }
 const playBtn = () => homeLayout().play;
@@ -605,10 +605,11 @@ const inBox = (e, b) => e.clientX >= b.x && e.clientX <= b.x + b.w && e.clientY 
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (screen === 'editor') { editorPointerDown(e); return; }
-  if (screen === 'perso') return;
+  if (screen === 'perso' || screen === 'tuto') return;
   if (screen === 'home') {
     if (inBox(e, playBtn())) { loadLevel(lvl); screen = 'game'; }
     else if (inBox(e, levelsBtn())) screen = 'levels';
+    else if (inBox(e, homeLayout().tuto)) openTutorial();
     else if (inBox(e, editorBtn())) openEditorLogin();
     else {
       const hl = homeLayout(), k = hl.tiles.findIndex(b => inBox(e, b));
@@ -839,6 +840,7 @@ function drawHome() {
   ctx.fillText(sel.name, W / 2, hl.tiles[0].y + hl.tiles[0].h + 16);
   button(hl.play, lvl > 0 ? `Continuer · niveau ${lvl + 1}` : 'Jouer', true);
   button(hl.levels, 'Niveaux', false);
+  button(hl.tuto, 'Tutoriel', false);
   ctx.font = `500 13px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.textAlign = 'center';
   ctx.fillText('Niveaux perso · créer et partager', hl.editor.x + hl.editor.w / 2, hl.editor.y + hl.editor.h / 2);
   ctx.font = `400 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.5)';
@@ -866,7 +868,7 @@ function drawLevels() {
 
 function draw() {
   if (screen === 'editor') { editorDraw(); return; }
-  if (screen === 'perso') { drawBackdrop(); return; }
+  if (screen === 'perso' || screen === 'tuto') { drawBackdrop(); return; }
   if (screen === 'home') { drawHome(); return; }
   if (screen === 'levels') { drawLevels(); return; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

@@ -815,3 +815,103 @@ function editorDraw() {
   if (Lv.planets[Lv.start.p]) { const st = startState(Lv); drawRocket(st.x, st.y, st.ang, Math.max(1, 1.15 / scale), false); }
   ctx.restore();
 }
+
+// ===== Tutoriel (bouton de l'accueil) =====
+// pages illustrées : commandes, puissance des gaz, réserve de gaz, vitesse et atterrissage, gravité, étoiles et ceintures, outils, objectifs
+const TUTO = [
+  { t: 'Piloter avec le doigt', svg: `
+    <circle cx="120" cy="80" r="62" fill="none" stroke="#fff" stroke-opacity=".35" stroke-dasharray="3 6"/>
+    <path d="M120 64 L131 92 L109 92 Z" fill="#fff"/>
+    <circle cx="170" cy="80" r="12" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="2"/>
+    <g stroke="#fff" stroke-width="2"><line x1="134" y1="80" x2="160" y2="80"/><line x1="134" y1="74" x2="156" y2="70"/><line x1="134" y1="86" x2="156" y2="90"/></g>
+    <path d="M100 80 H50 M58 72 L50 80 L58 88" stroke="#30d158" stroke-width="3" fill="none"/>
+    <text x="45" y="112" fill="#30d158" font-size="12">le vaisseau part par ici</text>`,
+    p: ['Pose le doigt dans le cercle en bas de l’écran : le vaisseau crache du gaz <b>du côté de ton doigt</b> et part <b>à l’opposé</b>.',
+      'Doigt à droite → poussée vers la gauche. Doigt sous le vaisseau → il monte.',
+      'Si tu maintiens, le vaisseau tourne peu à peu son nez dans le sens de la poussée.',
+      'Sur ordinateur : flèches (ou ZQSD / WASD), la poussée va dans le sens de la touche.'] },
+  { t: 'La puissance des gaz', svg: `
+    <circle cx="120" cy="80" r="62" fill="none" stroke="#fff" stroke-opacity=".35" stroke-dasharray="3 6"/>
+    <circle cx="120" cy="80" r="8" fill="#fff" fill-opacity=".15"/>
+    <circle cx="120" cy="80" r="31" fill="none" stroke="#ffd60a" stroke-opacity=".6"/>
+    <circle cx="151" cy="80" r="6" fill="#ffd60a"/><text x="140" y="102" fill="#ffd60a" font-size="11">50 %</text>
+    <circle cx="182" cy="80" r="6" fill="#ff6b61"/><text x="170" y="66" fill="#ff6b61" font-size="11">100 %</text>
+    <text x="72" y="160" fill="#fff" fill-opacity=".7" font-size="11">centre : aucune poussée</text>`,
+    p: ['La puissance dépend de la <b>distance entre ton doigt et le centre</b> du cercle : près du centre, un petit souffle ; au bord, pleine puissance.',
+      'Tout au centre, rien ne se passe : pratique pour garder le doigt en place.',
+      'Petites poussées = trajectoires fines et gaz économisé. Pleine puissance = pour décoller ou freiner fort.'] },
+  { t: 'La réserve de gaz', svg: `
+    <rect x="100" y="20" width="22" height="130" fill="none" stroke="#fff" stroke-width="2"/>
+    <rect x="104" y="70" width="14" height="76" fill="#fff"/><rect x="104" y="46" width="14" height="24" fill="#fff" fill-opacity=".35"/>
+    <line x1="92" y1="85" x2="100" y2="85" stroke="#fff"/><text x="40" y="89" fill="#fff" font-size="11">50 %</text>
+    <text x="132" y="62" fill="#fff" fill-opacity=".7" font-size="11">ce que la</text><text x="132" y="76" fill="#fff" fill-opacity=".7" font-size="11">simulation</text><text x="132" y="90" fill="#fff" fill-opacity=".7" font-size="11">consommerait</text>`,
+    p: ['La jauge « Gaz » à gauche se vide <b>selon la puissance et la durée</b> de chaque poussée : 1 seconde à fond consomme autant que 2 secondes à mi-puissance. Le plein correspond à quelques secondes de poussée maximale : chaque appui compte.',
+      'Le repère marque 50 % : finir le niveau au-dessus rapporte une étoile.',
+      'Plus de gaz = plus de poussée possible. Dans l’ombre d’une planète ou réservoir vide, les jets ne répondent plus.'] },
+  { t: 'Vitesse et atterrissage', svg: `
+    <path d="M20 150 Q120 120 220 150 L220 170 L20 170 Z" fill="#3d7f3b"/>
+    <path d="M120 70 L128 92 L112 92 Z" fill="#fff"/><path d="M120 100 V120" stroke="#fff" stroke-dasharray="3 4"/>
+    <rect x="60" y="20" width="120" height="6" fill="#30d158"/><text x="98" y="16" fill="#fff" font-size="11">32 m/s</text>
+    <text x="150" y="86" fill="#30d158" font-size="12">arrière d’abord</text>`,
+    p: ['La barre au-dessus de la commande montre la vitesse : <b>verte</b> si tout va bien, <b>rouge</b> si tu fonces vers un crash.',
+      'Pour se poser : arriver à moins de <b>45 m/s</b> et <b>par l’arrière</b> (le nez à peu près vers le haut, à 45° près). Freine en poussant vers le haut juste avant le sol.',
+      'Dans le vide, rien ne freine : sans poussée, le vaisseau garde sa vitesse.'] },
+  { t: 'La gravité, ton meilleur carburant', svg: `
+    <circle cx="140" cy="90" r="34" fill="#c25a30"/>
+    <circle cx="140" cy="90" r="62" fill="none" stroke="#fff" stroke-opacity=".25" stroke-dasharray="3 6"/>
+    <path d="M10 165 C120 160 205 135 192 90 S170 30 228 18" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="6 5"/>
+    <path d="M219 13 L229 18 L221 26" stroke="#fff" stroke-width="2" fill="none"/>
+    <text x="10" y="20" fill="#ffd60a" font-size="12">effet de fronde</text>`,
+    p: ['Chaque astre attire le vaisseau, d’autant plus qu’il est <b>grand, dense et proche</b>. La jauge « Gravité » à droite montre la force subie.',
+      'Frôler une planète courbe ta trajectoire et peut t’accélérer gratuitement : c’est l’<b>effet de fronde</b>. Bien calculé, il remplace beaucoup de gaz.',
+      'Une orbite, c’est tomber autour d’un astre sans jamais le toucher : une fois lancé, plus besoin de pousser.',
+      'Les lunes tournent autour de leur planète (à partir du premier jet) et dévient elles aussi ta route.'] },
+  { t: 'Étoiles, ombres et ceintures', svg: `
+    <circle cx="20" cy="20" r="40" fill="#ffb22e"/>
+    <circle cx="130" cy="85" r="26" fill="#3b6ee0"/>
+    <path d="M118 108 L200 170 L240 140 L150 70 Z" fill="#000" fill-opacity=".55"/>
+    <text x="175" y="128" fill="#fff" fill-opacity=".8" font-size="11">ombre</text>
+    <g fill="#8d8070"><circle cx="30" cy="140" r="4"/><circle cx="48" cy="150" r="3"/><circle cx="66" cy="157" r="4"/><circle cx="84" cy="162" r="3"/><circle cx="14" cy="128" r="3"/></g>
+    <text x="40" y="132" fill="#8d8070" font-size="11">ceinture</text>`,
+    p: ['Une étoile éclaire les planètes et projette leur <b>ombre</b>. Dans l’ombre, les commandes sont coupées : il faut y entrer avec le bon élan.',
+      'Toucher une étoile ou une <b>ceinture d’astéroïdes</b> détruit le vaisseau : contourne-les.',
+      'Les anneaux des planètes sont décoratifs : tu peux les traverser (ça soulève juste de la poussière).'] },
+  { t: 'Tes outils avant de partir', svg: `
+    <circle cx="60" cy="90" r="30" fill="#c25a30"/><circle cx="60" cy="90" r="58" fill="#fff" fill-opacity=".08"/>
+    <text x="30" y="166" fill="#fff" fill-opacity=".8" font-size="11">touche un astre</text>
+    <path d="M150 150 Q160 70 200 50" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="8 5"/>
+    <circle cx="200" cy="50" r="9" fill="#000" stroke="#fff"/><text x="196" y="54" fill="#fff" font-size="10">1</text>
+    <text x="140" y="166" fill="#fff" fill-opacity=".8" font-size="11">touche le vide</text>`,
+    p: ['<b>Touche un astre</b> : sa zone de gravité et son orbite conseillée s’affichent.',
+      '<b>Touche le vide</b> (moitié basse) : la simulation trace la trajectoire la plus adaptée vers ce point et montre le gaz nécessaire. « Valider la trajectoire » laisse le pilote automatique la suivre ; touche la commande pour reprendre la main.',
+      '<b>« ? »</b> en haut : la solution conseillée du niveau. Parti sans simulation, la trajectoire prévue (si tu ne fais rien) s’affiche devant le vaisseau.'] },
+  { t: 'Objectifs et étoiles', svg: `
+    <circle cx="70" cy="80" r="40" fill="none" stroke="#fff" stroke-width="2" stroke-dasharray="8 6"/><text x="64" y="85" fill="#fff" font-size="14">1</text>
+    <text x="130" y="60" fill="#ffd60a" font-size="22">★ ★ ★</text>
+    <text x="130" y="90" fill="#fff" fill-opacity=".8" font-size="11">terminer · 50 % de gaz</text><text x="130" y="105" fill="#fff" fill-opacity=".8" font-size="11">· chrono</text>`,
+    p: ['Chaque niveau a une mission : rester 5 s dans une zone, se poser sur un astre, faire des tours d’un astre… parfois plusieurs à la suite.',
+      'Trois étoiles par niveau : <b>terminer</b>, terminer avec <b>au moins 50 % de gaz</b>, terminer <b>sous le chrono</b> (il démarre au premier jet).',
+      'Dans « Niveaux perso », crée tes propres niveaux et défie tes amis. Bon vol !'] },
+];
+
+function openTutorial(page = 0) {
+  document.getElementById('tutoScr')?.remove();
+  screen = 'tuto';
+  const T = TUTO[page];
+  const close = () => { document.getElementById('tutoScr')?.remove(); screen = 'home'; };
+  const art = el('div', { style: 'display:flex;justify-content:center' });
+  art.innerHTML = `<svg viewBox="0 0 240 180" width="100%" style="max-width:300px" font-family="system-ui,-apple-system,sans-serif">${T.svg}</svg>`;
+  const text = el('div', { style: 'display:flex;flex-direction:column;gap:10px;font-size:15px;line-height:1.45' });
+  text.innerHTML = T.p.map(x => `<p style="margin:0">${x}</p>`).join('');
+  const dots = el('div', { style: 'display:flex;gap:6px;justify-content:center' }, TUTO.map((_, i) => el('span', { style: `width:8px;height:8px;border-radius:4px;background:${i === page ? '#fff' : 'rgba(255,255,255,.25)'}` })));
+  const scr = el('div', { id: 'tutoScr', class: 'ed', style: 'top:0;bottom:0;overflow-y:auto;padding:calc(env(safe-area-inset-top) + 10px) 18px calc(env(safe-area-inset-bottom) + 16px);background:rgba(0,0,0,.88);display:flex;flex-direction:column;gap:14px' },
+    el('div', { class: 'row' }, el('button', { onclick: close }, '‹ Accueil'), el('span', { style: 'flex:1;text-align:right;color:rgba(255,255,255,.5);font-size:13px' }, `${page + 1} / ${TUTO.length}`)),
+    el('h3', { style: 'margin:4px 0 0;font-size:22px' }, T.t), art, text,
+    el('div', { style: 'flex:1' }), dots,
+    el('div', { class: 'row' },
+      el('button', { style: 'flex:1', disabled: page === 0, onclick: () => openTutorial(page - 1) }, 'Précédent'),
+      page < TUTO.length - 1
+        ? el('button', { class: 'pri', style: 'flex:1', onclick: () => openTutorial(page + 1) }, 'Suivant')
+        : el('button', { class: 'pri', style: 'flex:1', onclick: close }, 'C’est parti !')));
+  document.body.append(scr);
+}
