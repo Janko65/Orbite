@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 35; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 36; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -41,7 +41,7 @@ try { const pub = JSON.parse(localStorage.getItem('orbite-niveaux-publies') || '
 let selPlanet = -1, taps = [], plan = null, planJob = null;
 let showHelp = false, helpRes = null, helpJob = null;
 let auto = null, simFlight = false, curTh = null, shadowNow = false;
-let tip = null, touch = null, particles = [];
+let tip = null, touches = new Map(), particles = []; // touches : doigts posés sur la commande (plusieurs à la fois)
 let medals = {};
 let screen = 'home', homeTex = null; // écrans : accueil, liste des niveaux, jeu, éditeur
 let testMode = false; // partie lancée depuis l'éditeur (« Tester »)
@@ -440,7 +440,7 @@ function loadLevel(i, obj) {
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; particles = []; touch = null; idleT = 0;
+  fuel = L.fuel; particles = []; touches.clear(); idleT = 0;
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
   auto = null; simFlight = false; curTh = null; tip = null;
@@ -460,7 +460,7 @@ const LOSS = {
 };
 function lose(why) {
   if (why === 'speed' || why === 'angle' || why === 'star' || why === 'belt') boom();
-  [msg, sub] = LOSS[why]; state = 'lost'; stateT = 0; touch = null;
+  [msg, sub] = LOSS[why]; state = 'lost'; stateT = 0; touches.clear();
 }
 function win() {
   const fuelPct = fuel / L.fuel * 100;
@@ -474,7 +474,7 @@ function win() {
     try { localStorage.setItem('orbite-medailles', JSON.stringify(medals)); } catch (e) {}
   }
   result = { got, fuelPct, time: elapsed };
-  state = 'won'; stateT = 0; touch = null;
+  state = 'won'; stateT = 0; touches.clear();
 }
 
 function depart() {
@@ -543,20 +543,28 @@ const toShip = (v, sgn) => {
   const a = sgn * (ship.ang + Math.PI / 2), c = Math.cos(a), s = Math.sin(a);
   return { x: v.x * c - v.y * s, y: v.x * s + v.y * c, p: v.p };
 };
+// un doigt → un jet, dans le repère de la commande (haut du cercle = haut de l'écran, ou nez du vaisseau en mode fixe)
+function fingerJet(t) {
+  const dx = t.x - ctrl.x, dy = t.y - ctrl.y, d = Math.hypot(dx, dy);
+  if (d < ctrl.r * 0.12) return null;
+  // doigt à droite → gaz éjecté à droite → poussée vers la gauche
+  const v = { x: -dx / d, y: -dy / d, p: Math.min(1, d / ctrl.r) };
+  if (!fixedNorth) return v;
+  // mode fixe : 4 directions seulement (avant, arrière, gauche, droite), la puissance est conservée
+  return Math.abs(v.x) >= Math.abs(v.y) ? { x: Math.sign(v.x), y: 0, p: v.p } : { x: 0, y: Math.sign(v.y), p: v.p };
+}
+const ctrlJets = () => [...touches.values()].map(fingerJet).filter(Boolean);
+// poussée totale : somme des jets ; chaque jet consomme son propre gaz (fuel = somme des puissances)
 function thrustInput() {
   if (state !== 'play') return null;
-  let v = null;
-  if (!touch) v = keys.size ? keyThrust() : null;
-  else {
-    const dx = touch.x - ctrl.x, dy = touch.y - ctrl.y, d = Math.hypot(dx, dy);
-    if (d < ctrl.r * 0.12) return null;
-    // doigt à droite → gaz éjecté à droite → poussée vers la gauche
-    v = { x: -dx / d, y: -dy / d, p: Math.min(1, d / ctrl.r) };
-  }
-  if (!v || !fixedNorth) return v;
-  // mode fixe : 4 directions seulement (avant, arrière, gauche, droite), la puissance est conservée
-  v = Math.abs(v.x) >= Math.abs(v.y) ? { x: Math.sign(v.x), y: 0, p: v.p } : { x: 0, y: Math.sign(v.y), p: v.p };
-  return toShip(v, 1);
+  let jets = ctrlJets();
+  if (!touches.size && keys.size) { const k = keyThrust(); jets = k ? [fixedNorth ? (Math.abs(k.x) >= Math.abs(k.y) ? { x: Math.sign(k.x), y: 0, p: 1 } : { x: 0, y: Math.sign(k.y), p: 1 }) : k] : []; }
+  if (!jets.length) return null;
+  const w = jets.map(v => fixedNorth ? toShip(v, 1) : v);
+  let sx = 0, sy = 0, f = 0;
+  for (const v of w) { sx += v.x * v.p; sy += v.y * v.p; f += v.p; }
+  const m = Math.sqrt(sx * sx + sy * sy);
+  return m > 1e-6 ? { x: sx / m, y: sy / m, p: m, fuel: f, jets: w } : { x: 0, y: 0, p: 0, fuel: f, jets: w };
 }
 
 // accueil : titre, choix du vaisseau, boutons, liens (effacer la progression, mises à jour)
@@ -678,12 +686,12 @@ cv.addEventListener('pointerdown', e => {
   }
   // avant le lancement, seule la zone du cercle de commande réagit ; ensuite tout le bandeau
   if (e.clientY >= bandTop && (departed || Math.hypot(e.clientX - ctrl.x, e.clientY - ctrl.y) <= ctrl.r)) {
-    touch = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   }
 }, { passive: false });
-cv.addEventListener('pointermove', e => { if (screen === 'editor') { editorPointerMove(e); return; } if (touch && e.pointerId === touch.id) { touch.x = e.clientX; touch.y = e.clientY; } });
-const release = e => { if (screen === 'editor') { editorPointerUp(e); return; } if (touch && e.pointerId === touch.id) touch = null; };
+cv.addEventListener('pointermove', e => { if (screen === 'editor') { editorPointerMove(e); return; } const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } });
+const release = e => { if (screen === 'editor') { editorPointerUp(e); return; } touches.delete(e.pointerId); };
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
 cv.addEventListener('contextmenu', e => e.preventDefault());
@@ -727,19 +735,19 @@ function tick() {
   curTh = th;
   if (th && !departed) depart();
   if (th) launched = true; // le chrono et les lunes démarrent au premier jet
-  turn(ship, th, DT);
-  if (th) {
-    const n = Math.ceil(2 * th.p);
+  if (th && th.p > 0) turn(ship, th, DT);
+  if (th) for (const jt of th.jets || [th]) {
+    const n = Math.ceil(2 * jt.p);
     for (let i = 0; i < n; i++) {
-      const sp = (0.35 - Math.random() * 0.7), ex = -th.x, ey = -th.y;
-      const cx = ex * Math.cos(sp) - ey * Math.sin(sp), cy = ex * Math.sin(sp) + ey * Math.cos(sp), v = 90 + Math.random() * 90 * th.p;
+      const sp = (0.35 - Math.random() * 0.7), ex = -jt.x, ey = -jt.y;
+      const cx = ex * Math.cos(sp) - ey * Math.sin(sp), cy = ex * Math.sin(sp) + ey * Math.cos(sp), v = 90 + Math.random() * 90 * jt.p;
       particles.push({ x: ship.x + ex * HULL_R, y: ship.y + ey * HULL_R, vx: ship.vx + cx * v, vy: ship.vy + cy * v, life: 0.25 + Math.random() * 0.3, max: 0.55 });
     }
   }
   const h = DT / SUB;
   let landedOn = -1, landed = false;
   for (let k = 0; k < SUB; k++) {
-    if (th) fuel = Math.max(0, fuel - h * th.p);
+    if (th) fuel = Math.max(0, fuel - h * (th.fuel ?? th.p));
     const r = physStep(launched ? snapshot(L, wt + k * h) : B0, ship, th, h);
     if (r.crash) { lose(r.crash); return; }
     if (r.contact >= 0) { landed = true; if (r.wasAir > 0.5) landedOn = r.contact; }
@@ -982,10 +990,24 @@ function draw() {
 
   // bandeau de commande (cercle en pointillés légers)
   ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5; ctx.setLineDash([2, 6]);
-  ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.fill(); // voile léger sous la commande
-  ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
-  const th = state === 'play' && curTh ? (fixedNorth ? toShip(curTh, -1) : curTh) : null; // jet dessiné du côté du doigt
-  if (th) {
+  const live = state === 'play' && curTh;
+  const ctlJets = !live ? [] : touches.size ? ctrlJets() : [fixedNorth ? toShip(curTh, -1) : curTh]; // jets dessinés du côté du doigt
+  if (fixedNorth) {
+    // mode fixe : 4 boutons en croix (avant, arrière, gauche, droite) ; plus on appuie loin du centre, plus ça pousse
+    const aw = ctrl.r * 0.5, a0 = ctrl.r * 0.3, R = ctrl.r;
+    for (const [ux, uy] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+      const x0 = ux ? ctrl.x + ux * (ux > 0 ? a0 : R) : ctrl.x - aw / 2, y0 = uy ? ctrl.y + uy * (uy > 0 ? a0 : R) : ctrl.y - aw / 2;
+      const w = ux ? R - a0 : aw, hh = uy ? R - a0 : aw;
+      const on = ctlJets.some(v => Math.round(-v.x) === ux && Math.round(-v.y) === uy && v.p > 0);
+      ctx.beginPath(); ctx.roundRect(x0, y0, w, hh, 10);
+      ctx.fillStyle = on ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.35)'; ctx.fill(); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.fill(); // voile léger sous la commande
+    ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, ctrl.r, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  }
+  for (const th of ctlJets) {
     const ex = -th.x, ey = -th.y, ir = ctrl.r * 0.22;
     ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 1.5;
     for (let i = -1; i <= 1; i++) {
@@ -1003,9 +1025,9 @@ function draw() {
   ctx.font = `600 12px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
   ctx.fillText(`${Math.round(speed)} m/s`, ctrl.x, ((ctrl.y - ctrl.r * 0.22) + sby) / 2);
   if (shadowed) { ctx.fillStyle = '#ffb340'; ctx.fillText('Dans l’ombre', ctrl.x, ctrl.y + ctrl.r * 0.55); }
-  if (touch) {
+  for (const t of touches.values()) {
     ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(touch.x, touch.y, 18, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(t.x, t.y, 18, 0, Math.PI * 2); ctx.stroke();
   }
 
   // icônes de statut : en haut trajectoire temps réel, en bas pilote auto ; l'icône active est allumée
