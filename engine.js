@@ -211,7 +211,7 @@ function missionControl(L, B, s, m, P, ws) {
 // le temps (chrono et mouvement des lunes) démarre au premier jet, comme dans le jeu
 function fly(L, P, pts, tmax) {
   const s = startState(L), m = missionInit(), ws = { step: -1, i: 0 }, path = [[s.x, s.y]];
-  let used = 0, t = 0, tw = 0, launched = false, frame = 0;
+  let used = 0, t = 0, tw = 0, launched = false, frame = 0, pi = 0;
   tmax = tmax || (pts ? 40 : 150);
   const h = DT / SUB;
   const res = ok => (path.push([s.x, s.y]), { ok, used, t: tw, path, end: { x: s.x, y: s.y, vx: s.vx, vy: s.vy, ang: s.ang, tw } });
@@ -219,8 +219,9 @@ function fly(L, P, pts, tmax) {
     const B0 = snapshot(L, tw);
     let th;
     if (pts) {
-      if (hyp(pts[0][0] - s.x, pts[0][1] - s.y) < 30) return res(true);
-      th = steer(B0, s, pts[0][0], pts[0][1], 0, P);
+      // points de passage dans l'ordre : on traverse les premiers à vitesse de croisière, on s'arrête au dernier
+      if (hyp(pts[pi][0] - s.x, pts[pi][1] - s.y) < 30 && ++pi >= pts.length) return res(true);
+      th = steer(B0, s, pts[pi][0], pts[pi][1], pi < pts.length - 1 ? P.vmax : 0, P);
     } else th = missionControl(L, B0, s, m, P, ws);
     if (th && inShadow(B0, s.x, s.y)) th = null;
     if (th) launched = true;
@@ -255,7 +256,8 @@ function predict(L, o) {
       const d = hyp(x - p.x, y - p.y);
       if (d < p.r + HULL_R) {
         path.push([x, y]);
-        return { path, hit: { x, y, t: i * h, crash: p.star || hyp(vx - p.vx, vy - p.vy) > CRASH_SPEED || !rearOk(o.ang, (x - p.x) / d, (y - p.y) / d) } };
+        const nx = (x - p.x) / d, ny = (y - p.y) / d;
+        return { path, hit: { x, y, t: i * h, p: p.i, v: hyp(vx - p.vx, vy - p.vy), da: Math.acos(Math.max(-1, Math.min(1, Math.cos(o.ang) * nx + Math.sin(o.ang) * ny))) * 180 / Math.PI, star: p.star, crash: p.star || hyp(vx - p.vx, vy - p.vy) > CRASH_SPEED || !rearOk(o.ang, (x - p.x) / d, (y - p.y) / d) } };
       }
     }
     if (x < -OUT_MARGIN || x > WORLD_W + OUT_MARGIN || y < -OUT_MARGIN || y > WORLD_H + OUT_MARGIN) break;

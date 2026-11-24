@@ -24,11 +24,11 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 36; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 49; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
-const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const cv = document.getElementById('c'); let ctx = cv.getContext('2d'); // ctx est prêté au dessin du vaisseau dans la fenêtre du centre de gravité
 const safeEl = document.getElementById('safe');
 
 let W, H, dpr, safeTop, safeBot, bandTop, gameH, scale, ox, oy, ctrl = { x: 0, y: 0, r: 50 }, bgStars = [];
@@ -40,7 +40,7 @@ let LV = LEVELS;
 try { const pub = JSON.parse(localStorage.getItem('orbite-niveaux-publies') || 'null'); if (Array.isArray(pub) && pub.length) LV = pub; } catch (e) {}
 let selPlanet = -1, taps = [], plan = null, planJob = null;
 let showHelp = false, helpRes = null, helpJob = null;
-let auto = null, simFlight = false, curTh = null, shadowNow = false;
+let auto = null, simFlight = false, curTh = null, shadowNow = false, predHit = -1; // predHit : astre que touche la trajectoire prévue (−1 = aucun)
 let tip = null, touches = new Map(), particles = []; // touches : doigts posés sur la commande (plusieurs à la fois)
 let medals = {};
 let screen = 'home', homeTex = null; // écrans : accueil, liste des niveaux, jeu, éditeur
@@ -53,6 +53,16 @@ function persoSave(k, arr) { try { localStorage.setItem(persoKey(k), JSON.string
 const levelTitle = () => playCtx ? (L.name || 'Niveau perso') : `Niveau ${lvl + 1}/${LV.length}`;
 let shipKind = 'fusee', updState = ''; // vaisseau choisi ; état de la vérification des mises à jour
 try { shipKind = localStorage.getItem('orbite-vaisseau') || 'fusee'; } catch (e) {}
+// centre de gravité G de chaque vaisseau, le long de son axe : -1 = arrière, 0 = milieu (là où visent les jets), +1 = nez
+const G_DEFAULT = 1; // par défaut : G au nez = rotation d'origine du jeu
+let shipG = {};
+try { shipG = JSON.parse(localStorage.getItem('orbite-g') || '{}') || {}; } catch (e) {}
+const gOf = () => shipG[shipKind] ?? G_DEFAULT;
+// redressement automatique (0 = aucun, comportement initial ; 1 = rapide) : l'arrière se tourne vers l'astre le plus proche, en consommant du gaz
+const REDRESS_COST = 0.15; // gaz (secondes de pleine poussée) par radian tourné
+let shipRed = {};
+try { shipRed = JSON.parse(localStorage.getItem('orbite-redressement') || '{}') || {}; } catch (e) {}
+const redOf = () => shipRed[shipKind] ?? 0;
 let fixedNorth = false; // commande : vaisseau orienté comme en vol (boussole) ou toujours vers le nord (fixe)
 try { fixedNorth = localStorage.getItem('orbite-commande') === 'fixe'; } catch (e) {}
 
@@ -433,8 +443,10 @@ function cancelJobs() {
   planJob = helpJob = null;
 }
 
+let nameT = -1e9, nameKey = ''; // nom du niveau affiché en fondu à l'entrée
 function loadLevel(i, obj) {
   cancelJobs();
+  { const key = (obj ? 'p' : 'o') + i + ':' + ((obj || LV[i] || {}).name || ''); if (key !== nameKey || screen !== 'game') nameT = performance.now(); nameKey = key; }
   lvl = i; L = obj || LV[i]; invalidate(L);
   if (!L.fuel) L.fuel = 5;
   if (!L.time) L.time = 60;
@@ -443,20 +455,20 @@ function loadLevel(i, obj) {
   fuel = L.fuel; particles = []; touches.clear(); idleT = 0;
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
-  auto = null; simFlight = false; curTh = null; tip = null;
+  auto = null; simFlight = false; curTh = null; tip = null; predHit = -1;
   state = 'play'; stateT = 0;
   buildTextures();
   if (!obj) try { localStorage.setItem('orbite-niveau', String(i)); } catch (e) {}
 }
 
 const LOSS = {
-  speed: ['Écrasé !', 'Touchez pour réessayer'],
-  angle: ['Mauvais atterrissage', 'Il faut se poser sur l’arrière · Touchez pour réessayer'],
-  star: ['Brûlé par l’étoile !', 'Touchez pour réessayer'],
-  belt: ['Percuté par des astéroïdes', 'Touchez pour réessayer'],
-  out: ['Perdu dans l’espace', 'Touchez pour réessayer'],
-  fuel: ['Plus de gaz', 'Touchez pour réessayer'],
-  shadow: ['Bloqué dans l’ombre', 'Touchez pour réessayer'],
+  speed: ['Écrasé !', 'Trop vite à l’arrivée · Touche pour repartir'],
+  angle: ['Atterrissage raté', 'On se pose sur l’arrière · Touche pour repartir'],
+  star: ['Brûlé par le soleil !', 'Touche pour repartir'],
+  belt: ['Pulvérisé par les astéroïdes', 'Touche pour repartir'],
+  out: ['Perdu dans l’espace', 'Touche pour repartir'],
+  fuel: ['Réservoir vide', 'Touche pour repartir'],
+  shadow: ['Coincé dans l’ombre', 'Touche pour repartir'],
 };
 function lose(why) {
   if (why === 'speed' || why === 'angle' || why === 'star' || why === 'belt') boom();
@@ -520,8 +532,8 @@ function runHelp() {
   helpJob = search(null, 1500, best => { helpRes = best ? { used: best.used, path: best.path } : { fail: true }; helpJob = null; });
 }
 
-// point de simulation en coordonnées monde, ramené dans la moitié basse de la zone de jeu
-const simPoint = (cx, cy) => [(cx - ox) / scale, (Math.max(cy, safeTop + gameH / 2) - oy) / scale];
+// point de simulation en coordonnées monde (tout l'écran de jeu)
+const simPoint = (cx, cy) => [(cx - ox) / scale, (cy - oy) / scale];
 const planetAt = (cx, cy) => {
   const wx = (cx - ox) / scale, wy = (cy - oy) / scale;
   return B.findIndex(p => Math.hypot(wx - p.x, wy - p.y) < p.r + 20 / scale);
@@ -569,10 +581,12 @@ function thrustInput() {
 
 // accueil : titre, choix du vaisseau, boutons, liens (effacer la progression, mises à jour)
 function homeLayout() {
-  const titleY = safeTop + Math.max(50, H * 0.09), s = Math.min(60, (W - 40 - 4 * 8) / 5), rowY = titleY + 96;
-  const tiles = SHIPS.map((_, i) => ({ x: W / 2 - (5 * s + 4 * 8) / 2 + i * (s + 8), y: rowY, w: s, h: s }));
-  const playY = rowY + s + 36;
-  return { titleY, tiles, play: { x: W / 2 - 110, y: playY, w: 220, h: 48 }, levels: { x: W / 2 - 110, y: playY + 58, w: 105, h: 48 }, tuto: { x: W / 2 + 5, y: playY + 58, w: 105, h: 48 },
+  const titleY = safeTop + Math.max(50, H * 0.09), playY = titleY + 96;
+  // vaisseau posé sur la Terre (touchable : ouvre le choix du vaisseau)
+  const R = Math.min(W * 0.75, 340), py = H + R * 0.5, upd = playY + 152 + 36;
+  const u = Math.max(1.6, Math.min(5, ((py - R) - (upd + 26)) / 19)), sy = py - R - 8.6 * u, k = measureShip(shipKind);
+  const ship = { cx: W / 2, cy: sy, u, R, py, x: W / 2 + k.l * u - 12, y: sy + k.t * u - 12, w: (k.r - k.l) * u + 24, h: (k.b - k.t) * u + 24 };
+  return { titleY, ship, play: { x: W / 2 - 110, y: playY, w: 220, h: 48 }, levels: { x: W / 2 - 110, y: playY + 58, w: 105, h: 48 }, tuto: { x: W / 2 + 5, y: playY + 58, w: 105, h: 48 },
     editor: { x: W / 2 - 90, y: playY + 112, w: 180, h: 36 }, clear: { x: W / 2 - 170, y: playY + 152, w: 165, h: 36 }, update: { x: W / 2 + 5, y: playY + 152, w: 165, h: 36 } };
 }
 const playBtn = () => homeLayout().play;
@@ -608,19 +622,22 @@ const backBtn = () => ({ x: 6, y: safeTop + 6, w: 110, h: 44 });
 const menuBtn = () => ({ x: 2, y: safeTop + 6, w: 34, h: 44 });
 function levelTiles() {
   const cols = 4, gap = 10, top = safeTop + 74, tw = (W - 32 - gap * (cols - 1)) / cols;
-  const th = Math.min(tw * 1.05, (H - safeBot - top - 16 - gap * 4) / 5);
-  return LV.map((_, i) => ({ x: 16 + (i % cols) * (tw + gap), y: top + Math.floor(i / cols) * (th + gap), w: tw, h: th }));
+  const NAME_H = 16; // place du nom sous chaque case
+  const th = Math.min(tw * 1.05, (H - safeBot - top - 16 - gap * 4 - NAME_H * 5) / 5);
+  return LV.map((_, i) => ({ x: 16 + (i % cols) * (tw + gap), y: top + Math.floor(i / cols) * (th + NAME_H + gap), w: tw, h: th }));
 }
 const restartBtn = () => ({ x: W - 118, y: safeTop + 10, w: 110, h: 36 });
 const helpBtn = () => ({ x: W - 166, y: safeTop + 6, w: 44, h: 44 });
-const validBtn = () => ({ x: W / 2 - 95, y: bandTop - 54, w: 190, h: 40 });
+const validBtn = () => { const r = ctrl.r * 0.62; return { x: ctrl.x - r, y: ctrl.y - r, w: 2 * r, h: 2 * r }; }; // rond, au centre de la commande
+let validT = -1e9; // moment de la validation : on ignore la commande juste après (double appui malheureux)
 const replayBtn = () => ({ x: W / 2 - 128, y: H / 2 + 92, w: 120, h: 44 });
 const nextBtn = () => ({ x: W / 2 + 8, y: H / 2 + 92, w: 120, h: 44 });
-const modeBtn = () => ({ x: W - 48, y: ctrl.y - 18, w: 36, h: 36 }); // bascule boussole / fixe, à droite de la commande
+const modeBtn = () => ({ x: W - 48, y: ctrl.y + 6, w: 36, h: 36 }); // bascule boussole / fixe, à droite de la commande
+const gBtn = () => ({ x: W - 48, y: ctrl.y - 42, w: 36, h: 36 }); // réglage du centre de gravité, juste dessous
 const statusIcons = () => [{ x: 12, y: ctrl.y - 42, w: 36, h: 36 }, { x: 12, y: ctrl.y + 6, w: 36, h: 36 }];
 const TIPS = [
-  ['Trajectoire prévue', 'Montre où va le vaisseau sans poussée.'],
-  ['Pilote auto', 'Suit la simulation validée.'],
+  ['Trajectoire prévue', 'Ta route si tu ne touches à rien.'],
+  ['Pilote auto', 'Il suit la route que tu as validée.'],
 ];
 const canValidate = () => !departed && state === 'play' && taps.length && !planJob && plan && !plan.fail && plan.used <= fuel;
 const inBox = (e, b) => e.clientX >= b.x && e.clientX <= b.x + b.w && e.clientY >= b.y && e.clientY <= b.y + b.h;
@@ -635,8 +652,8 @@ cv.addEventListener('pointerdown', e => {
     else if (inBox(e, homeLayout().tuto)) openTutorial();
     else if (inBox(e, editorBtn())) openEditorLogin();
     else {
-      const hl = homeLayout(), k = hl.tiles.findIndex(b => inBox(e, b));
-      if (k >= 0) { shipKind = SHIPS[k].id; try { localStorage.setItem('orbite-vaisseau', shipKind); } catch (err) {} }
+      const hl = homeLayout();
+      if (inBox(e, hl.ship)) openShipPicker();
       else if (inBox(e, hl.clear)) clearProgress();
       else if (inBox(e, hl.update)) checkUpdate();
     }
@@ -656,6 +673,7 @@ cv.addEventListener('pointerdown', e => {
     else if (inBox(e, nextBtn())) { if (testMode) backToEditor(); else if (playCtx) openPerso(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
     return;
   }
+  if (state === 'play' && inBox(e, gBtn())) { touches.clear(); keys.clear(); openGModal(); return; }
   if (state === 'play' && inBox(e, modeBtn())) { fixedNorth = !fixedNorth; try { localStorage.setItem('orbite-commande', fixedNorth ? 'fixe' : 'boussole'); } catch (err) {} return; }
   if (state !== 'play') { if (stateT >= 0.6) loadLevel(lvl, testMode || playCtx ? L : undefined); return; }
   // avant le lancement : un appui sur une icône de statut l'explique
@@ -666,7 +684,8 @@ cv.addEventListener('pointerdown', e => {
   tip = null;
   if (!departed && taps.length) {
     // simulation affichée : « Valider » lance le pilote auto ; tout autre appui annule la simulation (sans décoller)
-    if (canValidate() && inBox(e, validBtn())) { auto = { P: plan.P, x: taps[0][0], y: taps[0][1] }; simFlight = true; depart(); }
+    if (canValidate() && Math.hypot(e.clientX - ctrl.x, e.clientY - ctrl.y) <= validBtn().w / 2) { auto = { P: plan.P, pts: taps.slice(), i: 0 }; simFlight = true; validT = performance.now(); depart(); }
+    else if (taps.length === 1 && e.clientY < bandTop && e.clientY > safeTop + 50 && planetAt(e.clientX, e.clientY) < 0) { taps.push(simPoint(e.clientX, e.clientY)); runPlan(); } // 2e point de passage
     else { taps = []; plan = null; if (planJob) { planJob.cancel = true; planJob = null; } }
     return;
   }
@@ -685,6 +704,7 @@ cv.addEventListener('pointerdown', e => {
     return;
   }
   // avant le lancement, seule la zone du cercle de commande réagit ; ensuite tout le bandeau
+  if (simFlight && performance.now() - validT < 700) return; // un 2e appui trop rapide ne coupe pas le pilote auto
   if (e.clientY >= bandTop && (departed || Math.hypot(e.clientX - ctrl.x, e.clientY - ctrl.y) <= ctrl.r)) {
     touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     try { cv.setPointerCapture(e.pointerId); } catch (err) {}
@@ -711,7 +731,7 @@ addEventListener('keydown', e => {
   if (k === 'r') loadLevel(lvl, testMode || playCtx ? L : undefined);                       // recommencer
   else if (k === 'escape') { cancelJobs(); keys.clear(); if (testMode) backToEditor(); else if (playCtx) openPerso(); else screen = 'levels'; } // retour
   else if (k === 'enter') {
-    if (state === 'play' && canValidate()) { auto = { P: plan.P, x: taps[0][0], y: taps[0][1] }; simFlight = true; depart(); } // valider la trajectoire
+    if (state === 'play' && canValidate()) { auto = { P: plan.P, pts: taps.slice(), i: 0 }; simFlight = true; depart(); } // valider la trajectoire
     else if (state === 'won' && stateT > 0.6) { if (testMode) backToEditor(); else if (playCtx) openPerso(); else loadLevel(lvl + 1 < LV.length ? lvl + 1 : 0); }
     else if (state === 'lost' && stateT > 0.6) loadLevel(lvl, testMode || playCtx ? L : undefined);
   } else if ((k === 'h' || k === '?') && !departed && state === 'play') { showHelp = !showHelp; if (showHelp) runHelp(); } // aide
@@ -719,15 +739,137 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => keys.clear());
 
+// rotation par le joueur : les jets visent le milieu du vaisseau ; l'écart avec G crée le couple
+// G vers le nez → le nez se tourne vers la poussée ; G au milieu → aucune rotation ; G vers l'arrière → la queue se tourne vers la poussée
+function turnG(s, th, dt) {
+  const k = gOf();
+  if (k >= 1) { turn(s, th, dt); return; } // G au nez : exactement le comportement initial
+  const nx = Math.cos(s.ang), ny = Math.sin(s.ang);
+  const cr = nx * th.y - ny * th.x, d = Math.atan2(cr, nx * th.x + ny * th.y);
+  let w = TURN_RATE * k * th.p * cr * dt;
+  if (k > 0 && Math.abs(w) > Math.abs(d)) w = d; // sans dépasser l'alignement
+  s.ang += w;
+}
+
+// fenêtre du centre de gravité : le vaisseau choisi en grand, le point rouge G se déplace vers l'avant ou l'arrière
+// boîte du dessin de chaque vaisseau (unités de dessin, nez vers y négatif), mesurée une fois sur un canevas hors écran
+const shipBox = {};
+function measureShip(kind) {
+  if (shipBox[kind]) return shipBox[kind];
+  const S = 9, CW = 220, CH = 280, c = document.createElement('canvas'); c.width = CW; c.height = CH;
+  const main = ctx; ctx = c.getContext('2d');
+  drawShip(kind, CW / 2, CH / 2, -Math.PI / 2, S, false, false);
+  const im = ctx.getImageData(0, 0, CW, CH).data; ctx = main;
+  let t = CH, b = 0, l = CW, r = 0;
+  for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) if (im[(y * CW + x) * 4 + 3] > 20) { t = Math.min(t, y); b = Math.max(b, y); l = Math.min(l, x); r = Math.max(r, x); }
+  return (shipBox[kind] = { t: (t - CH / 2) / S, b: (b - CH / 2) / S, l: (l - CW / 2) / S, r: (r - CW / 2) / S });
+}
+const gLocalY = kind => { const k = measureShip(kind); return (k.t + k.b) / 2 - gOf() * (k.b - k.t) / 2; };
+// point de sortie du gaz : depuis G, dans la direction d'éjection (ex, ey), jusqu'à la coque du vaisseau
+// point du dessin du vaisseau (unités de dessin, −y = nez) → monde
+function shipPoint(dx, dy) {
+  const unit = Math.max(1, 1.15 / scale), off = HULL_R - 8.6 * unit, nx = Math.cos(ship.ang), ny = Math.sin(ship.ang);
+  const px = dx * unit, py = dy * unit + off;
+  return { x: ship.x + px * -ny - py * nx, y: ship.y + px * nx - py * ny };
+}
+function jetOrigin(ex, ey) {
+  const k = measureShip(shipKind), unit = Math.max(1, 1.15 / scale), off = HULL_R - 8.6 * unit;
+  const nx = Math.cos(ship.ang), ny = Math.sin(ship.ang); // nez ; droite du vaisseau = (-ny, nx)
+  const lx = ex * -ny + ey * nx, ly = -(ex * nx + ey * ny), gy = (k.t + k.b) / 2; // visuel : comme si G était au centre du dessin
+  const hw = 0.7 * (k.r - k.l) / 2; // largeur du corps (sans le bout des ailerons)
+  let tt = Infinity;
+  if (lx > 1e-6) tt = Math.min(tt, hw / lx); else if (lx < -1e-6) tt = Math.min(tt, -hw / lx);
+  if (ly > 1e-6) tt = Math.min(tt, (k.b - gy) / ly); else if (ly < -1e-6) tt = Math.min(tt, (k.t - gy) / ly);
+  const px = lx * tt * unit, py = (gy + ly * tt) * unit + off; // repère local tourné (−y = nez)
+  return { x: ship.x + px * -ny - py * nx, y: ship.y + px * nx - py * ny };
+}
+// choix du vaisseau (depuis l'accueil, en touchant le vaisseau)
+function openShipPicker() {
+  modal((box, close) => {
+    const grid = el('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:10px' });
+    for (const sh of SHIPS) {
+      const S = 84, c = el('canvas', { width: S * dpr, height: S * dpr, style: `position:static;display:block;width:${S}px;height:${S}px;margin:0 auto` });
+      const k = measureShip(sh.id), u = Math.min((S - 14) / (k.b - k.t), (S - 14) / (k.r - k.l));
+      const g = c.getContext('2d'), main = ctx; ctx = g; g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawShip(sh.id, S / 2 - (k.l + k.r) / 2 * u, S / 2 - (k.t + k.b) / 2 * u, -Math.PI / 2, u, false, false); ctx = main;
+      const on = sh.id === shipKind;
+      grid.append(el('div', { style: `cursor:pointer;border-radius:14px;padding:8px 4px;text-align:center;font-size:12px;background:${on ? 'rgba(255,255,255,.14)' : '#1c1c20'};border:${on ? '2px solid #fff' : '1px solid rgba(255,255,255,.15)'}`,
+        onclick: () => { shipKind = sh.id; try { localStorage.setItem('orbite-vaisseau', shipKind); } catch (err) {} close(); } }, c, el('div', { style: 'margin-top:4px' }, sh.name)));
+    }
+    box.append(el('h3', {}, 'Vaisseau'), grid);
+  });
+}
+
+function openGModal() {
+  const save = () => { try { localStorage.setItem('orbite-g', JSON.stringify(shipG)); localStorage.setItem('orbite-redressement', JSON.stringify(shipRed)); } catch (e) {} };
+  const card = 'flex:1;min-width:0;background:#1c1c20;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:12px 10px;display:flex;flex-direction:column;align-items:center;gap:10px';
+  const ttl = t => el('div', { style: 'font-size:13px;font-weight:700;text-align:center;line-height:1.2' }, t);
+  const hint = t => el('div', { style: 'font-size:11px;line-height:1.35;color:rgba(255,255,255,.55);text-align:center' }, t);
+  const sbtn = (t, f, st = '') => el('button', { style: 'min-height:36px;padding:0 8px;font-size:13px;' + st, onclick: f }, t);
+
+  // carte 1 : centre de gravité (vaisseau en grand, point G rouge)
+  const CW = 130, CH = 190, c = el('canvas', { width: CW * dpr, height: CH * dpr, style: `position:static;display:block;width:${CW}px;height:${CH}px` });
+  const g2 = c.getContext('2d');
+  const paint = () => {
+    const k = measureShip(shipKind), S = Math.min((CH - 16) / (k.b - k.t), (CW - 30) / (k.r - k.l));
+    const x0 = CW / 2 - (k.l + k.r) / 2 * S, y0 = CH / 2 - (k.t + k.b) / 2 * S;
+    const main = ctx; ctx = g2;
+    g2.setTransform(dpr, 0, 0, dpr, 0, 0); g2.clearRect(0, 0, CW, CH);
+    drawShip(shipKind, x0, y0, -Math.PI / 2, S, false, false);
+    ctx = main;
+    const gy = y0 + gLocalY(shipKind) * S;
+    g2.fillStyle = '#ff3b30'; g2.strokeStyle = '#fff'; g2.lineWidth = 2;
+    g2.beginPath(); g2.arc(x0, gy, 7, 0, Math.PI * 2); g2.fill(); g2.stroke();
+    g2.font = `700 14px ${FONT}`; g2.textAlign = 'left'; g2.textBaseline = 'middle'; g2.fillText('G', x0 + 11, gy);
+  };
+  const moveG = dv => { shipG[shipKind] = Math.max(-1, Math.min(1, Math.round((gOf() + dv) * 10) / 10)); save(); paint(); };
+  const cardG = el('div', { style: card }, ttl('Centre de gravité'), c,
+    el('div', { class: 'row', style: 'width:100%' }, sbtn('▲', () => moveG(0.1), 'flex:1'), sbtn('▼', () => moveG(-0.1), 'flex:1')),
+    hint('Nez : pivote vers la poussée. Centre : ne pivote pas. Arrière : pivote à l’inverse.'),
+    sbtn('Reset', () => { delete shipG[shipKind]; save(); paint(); }, 'width:100%;margin-top:auto'));
+
+  // carte 2 : redressement automatique, curseur vertical (du bas = arrêt, vers le haut = rapide)
+  const TH = 190, fill = el('div', { style: 'position:absolute;left:0;right:0;bottom:0;border-radius:7px;background:linear-gradient(#ff9f0a,#ffd60a)' });
+  const knob = el('div', { style: 'position:absolute;left:50%;width:30px;height:30px;margin-left:-15px;border-radius:15px;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.5)' });
+  const track = el('div', { style: `position:relative;width:14px;height:${TH}px;border-radius:7px;background:rgba(255,255,255,.12)` }, fill, knob);
+  const val = el('div', { style: 'font-size:13px;font-weight:700;min-height:16px' });
+  const warn = el('div', { style: 'font-size:12px;line-height:1.4;padding:10px 12px;border-radius:12px;background:rgba(255,159,10,.12);border:1px solid rgba(255,159,10,.45);color:#ffcc80' },
+    '⚠️ Le redressement auto ', el('b', {}, 'consomme du gaz'), '.');
+  const showR = () => {
+    const v = redOf();
+    fill.style.height = v * 100 + '%'; knob.style.bottom = `calc(${v * 100}% - 15px)`;
+    val.textContent = v ? Math.round(v * 100) + ' %' : 'Arrêt'; val.style.color = v ? '#ffd60a' : 'rgba(255,255,255,.55)';
+    warn.style.opacity = v ? 1 : 0.6;
+  };
+  const setR = y => { const r = track.getBoundingClientRect(), v = Math.max(0, Math.min(1, Math.round((1 - (y - r.top) / r.height) * 20) / 20)); if (v) shipRed[shipKind] = v; else delete shipRed[shipKind]; save(); showR(); };
+  const zone = el('div', { style: 'padding:15px 20px;touch-action:none;cursor:pointer;display:flex;justify-content:center' }, track);
+  zone.addEventListener('pointerdown', e => { e.preventDefault(); zone.setPointerCapture(e.pointerId); setR(e.clientY); });
+  zone.addEventListener('pointermove', e => { if (zone.hasPointerCapture(e.pointerId)) setR(e.clientY); });
+  const cardR = el('div', { style: card }, ttl('Redressement auto'), val, zone,
+    hint('Si la trajectoire touche un astre, le vaisseau s’oriente pour s’y poser.'),
+    sbtn('Reset', () => { delete shipRed[shipKind]; save(); showR(); }, 'width:100%;margin-top:auto'));
+
+  modal((box, close) => {
+    box.style.width = 'min(100%,380px)';
+    box.append(el('h3', {}, 'Réglages du vaisseau'),
+      el('div', { style: 'display:flex;gap:10px;align-items:stretch' }, cardG, cardR),
+      warn, el('button', { class: 'pri', onclick: close }, 'OK'));
+    paint(); showR();
+  });
+}
+
 // ===== Physique : pas fixe identique à la simulation =====
 function tick() {
   if (state !== 'play') return;
   const B0 = snapshot(L, wt);
   let th = thrustInput();
+  const byPlayer = !!th;
   if (th) auto = null; // le joueur reprend la main
   else if (auto) {
-    if (hyp(auto.x - ship.x, auto.y - ship.y) < 30) auto = null; // objectif de la simulation atteint
-    else th = steer(B0, ship, auto.x, auto.y, 0, auto.P);
+    // même logique que fly() : points de passage dans l'ordre, arrêt au dernier
+    const ap = auto.pts;
+    if (hyp(ap[auto.i][0] - ship.x, ap[auto.i][1] - ship.y) < 30 && ++auto.i >= ap.length) auto = null; // objectif de la simulation atteint
+    else th = steer(B0, ship, ap[auto.i][0], ap[auto.i][1], auto.i < ap.length - 1 ? auto.P.vmax : 0, auto.P);
   }
   if (fuel <= 0) th = null;
   shadowNow = inShadow(B0, ship.x, ship.y);
@@ -735,13 +877,38 @@ function tick() {
   curTh = th;
   if (th && !departed) depart();
   if (th) launched = true; // le chrono et les lunes démarrent au premier jet
-  if (th && th.p > 0) turn(ship, th, DT);
+  if (th && th.p > 0) { if (byPlayer) turnG(ship, th, DT); else turn(ship, th, DT); } // le pilote auto garde la rotation du solveur
+  // redressement automatique (réglage du vaisseau) : en vol, sans poussée du joueur ni pilote auto ; consomme du gaz
+  const red = redOf();
+  if (red > 0 && departed && !byPlayer && !auto && !shadowNow && fuel > 0 && ship.airT > 0) {
+    // seulement si la trajectoire prévue (celle tracée devant le vaisseau) va toucher un astre : on se redresse vers lui ; en orbite, rien
+    const tb = predHit >= 0 && B0[predHit] && !B0[predHit].star ? B0[predHit] : null;
+    if (tb) {
+      let d = Math.atan2(ship.y - tb.y, ship.x - tb.x) - ship.ang; d = Math.atan2(Math.sin(d), Math.cos(d)); // nez à l'opposé de l'astre
+      const m = TURN_RATE * red * DT, w = Math.max(-m, Math.min(m, d));
+      ship.ang += w; fuel = Math.max(0, fuel - REDRESS_COST * Math.abs(w));
+      // visuel seulement : petits coups de gaz bleutés, saccadés, au nez et à la queue (couple de rotation)
+      if (Math.abs(w) > 1e-4 && Math.floor(performance.now() / 110) % 2 === 0 && Math.random() < 0.35 + 0.65 * Math.abs(w) / m) {
+        const k = measureShip(shipKind), sg = Math.sign(w), sx = -Math.sin(ship.ang) * sg, sy = Math.cos(ship.ang) * sg; // sens où part le nez
+        const hw = 0.75 * (k.r - k.l) / 2; // bord du corps
+        for (const [dy, e] of [[k.t + (k.b - k.t) * 0.18, -1], [k.b - (k.b - k.t) * 0.18, 1]]) {
+          const o = shipPoint(-e * sg * hw, dy);
+          for (let n = 0; n < 2; n++) {
+            const v = 35 + Math.random() * 35, sp = 0.3 - Math.random() * 0.6;
+            const ex = e * sx, ey = e * sy, cx = ex * Math.cos(sp) - ey * Math.sin(sp), cy = ex * Math.sin(sp) + ey * Math.cos(sp);
+            particles.push({ x: o.x, y: o.y, vx: ship.vx + cx * v, vy: ship.vy + cy * v, life: 0.18 + Math.random() * 0.17, max: 0.35, rgb: '170,215,255', sz: 1 });
+          }
+        }
+      }
+    }
+  }
   if (th) for (const jt of th.jets || [th]) {
     const n = Math.ceil(2 * jt.p);
     for (let i = 0; i < n; i++) {
       const sp = (0.35 - Math.random() * 0.7), ex = -jt.x, ey = -jt.y;
       const cx = ex * Math.cos(sp) - ey * Math.sin(sp), cy = ex * Math.sin(sp) + ey * Math.cos(sp), v = 90 + Math.random() * 90 * jt.p;
-      particles.push({ x: ship.x + ex * HULL_R, y: ship.y + ey * HULL_R, vx: ship.vx + cx * v, vy: ship.vy + cy * v, life: 0.25 + Math.random() * 0.3, max: 0.55 });
+      const o = jetOrigin(ex, ey);
+      particles.push({ x: o.x, y: o.y, vx: ship.vx + cx * v, vy: ship.vy + cy * v, life: 0.25 + Math.random() * 0.3, max: 0.55 });
     }
   }
   const h = DT / SUB;
@@ -799,10 +966,15 @@ function drawCoast(pr) {
   ctx.strokeStyle = 'rgba(255,255,255,0.55)'; drawPath(pr.path, [2, 6]);
   if (!pr.hit) return;
   const { x, y } = pr.hit, k = 7 / scale;
-  if (pr.hit.crash) {
-    ctx.strokeStyle = '#ff3b30'; ctx.lineWidth = 2 / scale;
-    ctx.beginPath(); ctx.moveTo(x - k, y - k); ctx.lineTo(x + k, y + k); ctx.moveTo(x + k, y - k); ctx.lineTo(x - k, y + k); ctx.stroke();
-  } else { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, y, 5 / scale, 0, Math.PI * 2); ctx.fill(); }
+  // croix d'impact : du rouge au vert, progressivement, selon la vitesse et l'inclinaison à l'arrivée (sans dire où est la limite)
+  let q = 0;
+  if (pr.hit.v != null && !pr.hit.star) {
+    const qs = Math.max(0, Math.min(1, 1 - pr.hit.v / (2 * CRASH_SPEED))), qa = Math.max(0, Math.min(1, 1 - pr.hit.da / (2 * LAND_ANGLE)));
+    const qd = Math.max(0, Math.min(1, 1 - hyp(x - ship.x, y - ship.y) / 350)); // et de plus en plus vert en approchant (rouge au-delà de 350 m)
+    q = Math.min(qs, qa) * qd;
+  }
+  ctx.strokeStyle = `hsl(${Math.round(q * 125)},85%,52%)`; ctx.lineWidth = 2 / scale;
+  ctx.beginPath(); ctx.moveTo(x - k, y - k); ctx.lineTo(x + k, y + k); ctx.moveTo(x + k, y - k); ctx.lineTo(x - k, y + k); ctx.stroke();
 }
 
 function label(text, x, y) {
@@ -835,33 +1007,23 @@ function drawHome() {
   drawBackdrop();
   const hl = homeLayout();
   // la Terre en bas, le vaisseau choisi posé dessus
-  const R = Math.min(W * 0.75, 340), px = W / 2, py = H + R * 0.5;
+  const { R, py } = hl.ship, px = W / 2;
   ctx.drawImage(homeTex, px - R, py - R, R * 2, R * 2);
   const lg = ctx.createLinearGradient(px - R * 0.6, py - R * 0.8, px + R * 0.6, py + R * 0.8);
   lg.addColorStop(0, 'rgba(0,0,0,0)'); lg.addColorStop(0.55, 'rgba(0,0,0,0.25)'); lg.addColorStop(1, 'rgba(0,0,0,0.85)');
   ctx.fillStyle = lg; ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = 'rgba(150,200,255,0.4)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(px, py, R + 1, 0, Math.PI * 2); ctx.stroke();
-  const room = (py - R) - (hl.update.y + hl.update.h + 26), u = Math.max(1.6, Math.min(5, room / 19));
-  drawShip(shipKind, W / 2, py - R - 8.6 * u, -Math.PI / 2, u, false, false);
+  drawShip(shipKind, hl.ship.cx, hl.ship.cy, -Math.PI / 2, hl.ship.u, false, false);
   // titre
   ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.font = `800 48px ${FONT}`; ctx.fillText('Orbite', W / 2, hl.titleY);
-  ctx.font = `400 14px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.fillText('Gravité, gaz et orbites', W / 2, hl.titleY + 36);
   const total = LV.reduce((a, _, i) => a + starsOf(i), 0);
   ctx.font = `600 15px ${FONT}`; ctx.fillStyle = '#ffd60a';
-  ctx.fillText(`★ ${total} / ${LV.length * 3}`, W / 2, hl.titleY + 62);
-  // choix du vaisseau
-  hl.tiles.forEach((b, i) => {
-    const on = SHIPS[i].id === shipKind;
-    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12);
-    ctx.fillStyle = on ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.05)'; ctx.fill();
-    ctx.strokeStyle = on ? '#fff' : 'rgba(255,255,255,0.25)'; ctx.lineWidth = on ? 2 : 1; ctx.stroke();
-    drawShip(SHIPS[i].id, b.x + b.w / 2, b.y + b.h / 2, -Math.PI / 2, b.w / 22, false, false);
-  });
+  ctx.fillText(`★ ${total} / ${LV.length * 3}`, W / 2, hl.titleY + 46);
+  // nom du vaisseau, au-dessus de lui (le toucher ouvre le choix)
   const sel = SHIPS.find(sh => sh.id === shipKind) || SHIPS[0];
   ctx.font = `500 13px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.textAlign = 'center';
-  ctx.fillText(sel.name, W / 2, hl.tiles[0].y + hl.tiles[0].h + 16);
+  ctx.fillText(sel.name, W / 2, hl.ship.y - 4);
   button(hl.play, lvl > 0 ? `Continuer · niveau ${lvl + 1}` : 'Jouer', true);
   button(hl.levels, 'Niveaux', false);
   button(hl.tuto, 'Tutoriel', false);
@@ -887,6 +1049,7 @@ function drawLevels() {
     ctx.fillText(String(i + 1), b.x + b.w / 2, b.y + b.h * 0.4);
     ctx.font = `${Math.round(b.h * 0.18)}px ${FONT}`;
     md.forEach((ok, k) => { ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.3)'; ctx.fillText(ok ? '★' : '☆', b.x + b.w / 2 + (k - 1) * b.h * 0.2, b.y + b.h * 0.76); });
+    ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = `600 11px ${FONT}`; ctx.fillText(LV[i].name || '', b.x + b.w / 2, b.y + b.h + 9, b.w + 6);
   });
 }
 
@@ -959,11 +1122,12 @@ function draw() {
 
   // trajectoire prévue sans poussée : visible en vol seulement si on est parti sans simulation
   const pred = departed && state === 'play' && !ship.dead ? predict(L, { ...ship, tw: wt }) : null;
+  predHit = pred && pred.hit && pred.hit.p != null ? pred.hit.p : -1;
   if (pred && !simFlight) drawCoast(pred);
 
   for (const q of particles) {
     ctx.fillStyle = `rgba(${q.rgb || '255,255,255'},${Math.max(0, q.life / q.max)})`;
-    const qs = (q.rgb ? 2 : 1.2) / scale; // poussière d'anneaux un peu plus grosse
+    const qs = (q.sz || (q.rgb ? 2 : 1.2)) / scale; // poussière d'anneaux un peu plus grosse ; coups de redressement plus fins
     ctx.fillRect(q.x - qs, q.y - qs, qs * 2, qs * 2);
   }
 
@@ -972,7 +1136,7 @@ function draw() {
 
   // étiquettes
   if (!departed && taps.length && !planJob && (!plan || plan.fail)) {
-    const [sx, sy] = toScreen(...taps[0]); label('Trajectoire impossible', sx, sy - 26);
+    const [sx, sy] = toScreen(...taps[taps.length - 1]); label('Aucune route jusque-là', sx, sy - 26);
   }
   if (showHelp && !departed) {
     if (helpJob) label(`Recherche d’une solution… ${Math.round(helpJob.progress * 100)} %`, W / 2, bandTop - 80);
@@ -1047,7 +1211,7 @@ function draw() {
 
   // bascule boussole / fixe : aiguille qui suit le vaisseau, ou vaisseau fixé avec un N
   {
-    const mx = W - 30, my = ctrl.y;
+    const mx = W - 30, my = ctrl.y + 24;
     ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.arc(mx, my, 18, 0, Math.PI * 2); ctx.stroke();
     if (fixedNorth) {
@@ -1058,8 +1222,22 @@ function draw() {
       ctx.beginPath(); ctx.moveTo(mx + cx2 * 12, my + sy2 * 12); ctx.lineTo(mx - sy2 * 4, my + cx2 * 4); ctx.lineTo(mx + sy2 * 4, my - cx2 * 4); ctx.closePath(); ctx.fill();
       ctx.globalAlpha = 0.4; ctx.beginPath(); ctx.moveTo(mx - cx2 * 12, my - sy2 * 12); ctx.lineTo(mx - sy2 * 4, my + cx2 * 4); ctx.lineTo(mx + sy2 * 4, my - cx2 * 4); ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
     }
-    ctx.font = `600 10px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    ctx.fillText(fixedNorth ? 'Fixe' : 'Boussole', mx, my + 22);
+    ctx.font = `600 10px ${FONT}`; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(fixedNorth ? 'Fixe' : 'Boussole', mx - 23, my);
+  }
+  // bouton des réglages du vaisseau : clé à molette
+  {
+    const mx = W - 30, my = ctrl.y - 24;
+    ctx.strokeStyle = '#fff'; ctx.fillStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(mx, my, 18, 0, Math.PI * 2); ctx.stroke();
+    ctx.save(); ctx.translate(mx + 1, my + 1); ctx.rotate(Math.PI / 4);
+    ctx.lineCap = 'round';
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 10); ctx.stroke();                        // manche
+    ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0, -5, 4.5, -Math.PI / 2 + 0.75, -Math.PI / 2 - 0.75); ctx.stroke(); // tête ouverte (mâchoire)
+    ctx.lineCap = 'butt';
+    ctx.restore();
+    ctx.fillStyle = '#fff'; ctx.font = `600 10px ${FONT}`; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText('Réglages', mx - 23, my);
   }
 
   // jauge de gravité verticale (bas droite de la zone de jeu) : remplie et rouge = forte gravité, vide et verte = vide spatial
@@ -1074,8 +1252,23 @@ function draw() {
     ctx.fillText('Gravité', gb.x + gb.w + 2, gb.y + gb.h + 6);
   }
 
+  // nom du niveau, en fondu rapide à l'entrée
+  {
+    const a = (performance.now() - nameT) / 1000, al = a < 0.25 ? a / 0.25 : a < 1.4 ? 1 : a < 1.75 ? (1.75 - a) / 0.35 : 0;
+    if (al > 0 && L.name) {
+      ctx.globalAlpha = al; ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = `700 26px ${FONT}`; ctx.fillText(L.name, W / 2, H * 0.36, W - 40); ctx.globalAlpha = 1;
+    }
+  }
+
   // bouton de validation de la simulation
-  if (canValidate()) button(validBtn(), 'Valider la trajectoire', true);
+  if (canValidate()) {
+    const vb = validBtn(), r = vb.w / 2;
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ctrl.x, ctrl.y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${Math.round(r * 0.36)}px ${FONT}`; ctx.fillText('Valider', ctrl.x, ctrl.y - r * 0.16);
+    ctx.font = `600 ${Math.round(r * 0.22)}px ${FONT}`; ctx.fillText('la trajectoire', ctrl.x, ctrl.y + r * 0.22);
+  }
 
   // jauge de gaz verticale (bas gauche) ; avant le départ, la partie que la simulation (ou l'aide) consommerait clignote
   {
@@ -1178,7 +1371,7 @@ function loop(now) {
   const fdt = Math.min(0.1, (now - last) / 1000); last = now;
   acc += fdt;
   let n = 0;
-  while (acc >= DT && n < 6) { if (screen === 'game') tick(); acc -= DT; n++; }
+  while (acc >= DT && n < 6) { if (screen === 'game' && !document.querySelector('.modal')) tick(); acc -= DT; n++; } // jeu en pause sous une fenêtre
   if (n === 6) acc = 0;
   stateT += fdt;
   for (const q of particles) { q.x += q.vx * fdt; q.y += q.vy * fdt; q.life -= fdt; }

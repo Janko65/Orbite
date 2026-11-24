@@ -819,68 +819,78 @@ function editorDraw() {
 // ===== Tutoriel (bouton de l'accueil) =====
 // pages illustrées : commandes, puissance des gaz, réserve de gaz, vitesse et atterrissage, gravité, étoiles et ceintures, outils, objectifs
 const TUTO = [
-  { t: 'Le voyage', svg: `
+  { t: 'Le vide', svg: `
     <circle cx="60" cy="150" r="42" fill="#1f5fae"/><path d="M60 100 L66 112 L54 112 Z" fill="#fff"/>
     <path d="M62 98 C90 40 170 20 215 60" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="6 5"/>
     <circle cx="200" cy="110" r="26" fill="#c25a30"/>
     <g fill="#ffd60a"><circle cx="62" cy="96" r="4"/><circle cx="140" cy="34" r="3"/><circle cx="205" cy="52" r="3"/></g>
     <text x="74" y="94" fill="#ffd60a" font-size="11">1 décollage</text><text x="118" y="22" fill="#ffd60a" font-size="11">petites tapes</text>`,
-    p: ['L’espace est immense, ton réservoir beaucoup moins. Pour aller loin, il faut ruser.',
-      'Un bon décollage te lance, puis tu te laisses porter : <b>ta vitesse t’emporte</b> et <b>la gravité des planètes te guide</b>.'] },
-  { t: 'Ton réacteur', svg: `
+    p: ['L’espace est immense. Ton réservoir, non.',
+      'Chaque voyage se gagne à l’élan et à la gravité.'] },
+  { t: 'Le réacteur', svg: `
     <circle cx="120" cy="80" r="62" fill="none" stroke="#fff" stroke-opacity=".35" stroke-dasharray="3 6"/>
     <path d="M120 64 L131 92 L109 92 Z" fill="#fff"/>
     <circle cx="170" cy="80" r="12" fill="none" stroke="#fff" stroke-opacity=".7" stroke-width="2"/>
     <g stroke="#fff" stroke-width="2"><line x1="134" y1="80" x2="160" y2="80"/><line x1="134" y1="74" x2="156" y2="70"/><line x1="134" y1="86" x2="156" y2="90"/></g>
     <path d="M100 80 H50 M58 72 L50 80 L58 88" stroke="#30d158" stroke-width="3" fill="none"/>
     <text x="40" y="112" fill="#30d158" font-size="12">le vaisseau part par ici</text>`,
-    p: ['Le cercle en bas, c’est ton réacteur. Pose le doigt d’un côté : le jet part de là et <b>te propulse à l’opposé</b>.',
-      'Au clavier, les flèches font la même chose.'] },
-  { t: 'En force ou en finesse', svg: `
+    p: ['Le gaz sort du côté de ton doigt. Le vaisseau part à l’opposé.',
+      'Plusieurs doigts, plusieurs jets. Au clavier, les flèches.'] },
+  { t: 'La poussée', svg: `
     <circle cx="120" cy="80" r="62" fill="none" stroke="#fff" stroke-opacity=".35" stroke-dasharray="3 6"/>
     <circle cx="151" cy="80" r="6" fill="#ffd60a"/><text x="136" y="102" fill="#ffd60a" font-size="11">doux</text>
     <circle cx="182" cy="80" r="6" fill="#ff6b61"/><text x="172" y="66" fill="#ff6b61" font-size="11">fort</text>`,
-    p: ['Au bord du cercle, <b>toute la puissance</b> : idéal pour décoller ou freiner net.',
-      'Près du centre, une simple pichenette : <b>tapote</b> pour ajuster ta trajectoire en douceur.'] },
-  { t: 'Chaque goutte compte', svg: `
-    <rect x="109" y="20" width="22" height="130" fill="none" stroke="#fff" stroke-width="2"/>
-    <rect x="113" y="70" width="14" height="76" fill="#fff"/>
-    <line x1="101" y1="85" x2="109" y2="85" stroke="#fff"/><text x="62" y="89" fill="#fff" font-size="11">50 %</text>`,
-    p: ['Ton gaz est précieux : chaque poussée en brûle un peu.',
-      'Un pilote habile arrive avec <b>la moitié du réservoir</b>… et gagne une étoile de plus.'] },
-  { t: 'La gravité, ton alliée', svg: `
+    p: ['Au bord du cercle, toute la puissance.',
+      'Près du centre, une simple correction.'] },
+  { t: 'Boussole ou Fixe', svg: `
+    <circle cx="62" cy="82" r="46" fill="none" stroke="#fff" stroke-opacity=".35" stroke-dasharray="3 6"/>
+    <g transform="translate(62 82) rotate(35)"><path d="M0 -13 L9 9 L-9 9 Z" fill="#fff"/></g>
+    <text x="62" y="150" fill="#fff" font-size="12" text-anchor="middle">Boussole</text>
+    <g fill="none" stroke="#fff" stroke-opacity=".5" stroke-dasharray="3 4">
+      <rect x="166" y="34" width="20" height="34" rx="6"/><rect x="166" y="96" width="20" height="34" rx="6"/>
+      <rect x="128" y="72" width="34" height="20" rx="6"/><rect x="190" y="72" width="34" height="20" rx="6"/></g>
+    <path d="M176 70 L184 90 L168 90 Z" fill="#fff"/>
+    <text x="176" y="150" fill="#fff" font-size="12" text-anchor="middle">Fixe</text>`,
+    p: ['<b>Boussole</b> : les directions de l’écran.',
+      '<b>Fixe</b> : celles du vaisseau.',
+      'Le bouton Boussole, à droite du réacteur, change de mode.'] },
+  { t: 'La gravité', svg: `
     <circle cx="140" cy="90" r="34" fill="#c25a30"/>
     <path d="M10 165 C120 160 205 135 192 90 S170 30 228 18" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="6 5"/>
     <path d="M219 13 L229 18 L221 26" stroke="#fff" stroke-width="2" fill="none"/>
     <text x="10" y="20" fill="#ffd60a" font-size="12">virage gratuit</text>`,
-    p: ['Frôle une planète : elle te fait virer, accélérer et te renvoie vers ta cible, <b>sans dépenser de gaz</b>.',
-      'Bien calculé, un voyage entier se fait presque gratuitement.'] },
-  { t: 'Se poser en douceur', svg: `
+    p: ['Chaque astre t’attire.',
+      'Frôle-le pour virer sans brûler de gaz.'] },
+  { t: 'L’atterrissage', svg: `
     <path d="M10 165 Q120 140 230 165 L230 180 L10 180 Z" fill="#3d7f3b"/>
     <g transform="translate(55 60) rotate(-50)"><path d="M0 -11 L8 9 L-8 9 Z" fill="#fff" fill-opacity=".5"/></g>
     <path d="M78 66 Q100 66 110 80" stroke="#fff" stroke-opacity=".5" fill="none" stroke-dasharray="3 4"/>
     <path d="M120 84 L128 106 L112 106 Z" fill="#fff"/>
     <g stroke="#ffb340" stroke-width="3"><line x1="120" y1="112" x2="120" y2="138"/><line x1="114" y1="110" x2="108" y2="132"/><line x1="126" y1="110" x2="132" y2="132"/></g>
+    <g stroke="#30d158" stroke-width="3"><line x1="188" y1="146" x2="200" y2="158"/><line x1="200" y1="146" x2="188" y2="158"/></g>
     <text x="140" y="96" fill="#ffd60a" font-size="11">grosse poussée</text><text x="140" y="110" fill="#ffd60a" font-size="11">pour freiner</text>
-    <text x="12" y="40" fill="#fff" fill-opacity=".7" font-size="11">tourne-le doucement</text>`,
-    p: ['À l’approche, tapote sous le vaisseau pour le <b>redresser peu à peu</b>, réacteur vers le sol.',
-      'Juste avant de toucher, <b>une grande poussée pour freiner</b>. Barre de vitesse verte : posé !'] },
-  { t: 'Trace ta route', svg: `
-    <path d="M40 160 Q60 70 170 50" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="8 5"/>
-    <circle cx="170" cy="50" r="9" fill="#000" stroke="#fff"/><text x="166" y="54" fill="#fff" font-size="10">1</text>
-    <rect x="65" y="140" width="150" height="26" rx="13" fill="#fff"/><text x="140" y="157" fill="#000" font-size="11" font-weight="700" text-anchor="middle">Valider la trajectoire</text>`,
-    p: ['Pas sûr de toi ? <b>Touche l’espace</b> : le jeu calcule un chemin et ce qu’il te coûtera.',
-      '<b>Valide</b>, et le pilote automatique t’y emmène. Tu reprends la main quand tu veux.',
-      'Bloqué ? Le « ? » te montre une solution.'] },
-  { t: 'Gare aux pièges', svg: `
+    <text x="12" y="40" fill="#fff" fill-opacity=".7" font-size="11">redresse-le doucement</text>`,
+    p: ['Sur l’arrière, et lentement.',
+      'La croix au bout de ta trajectoire verdit quand l’approche est bonne.',
+      'Le bouton Réglages peut redresser le vaisseau pour toi, contre du gaz.'] },
+  { t: 'La route', svg: `
+    <path d="M40 120 Q60 40 170 30" stroke="#fff" stroke-width="2" fill="none" stroke-dasharray="8 5"/>
+    <circle cx="170" cy="30" r="9" fill="#000" stroke="#fff"/><text x="166" y="34" fill="#fff" font-size="10">1</text>
+    <circle cx="120" cy="140" r="34" fill="#fff"/><text x="120" y="138" fill="#000" font-size="13" font-weight="700" text-anchor="middle">Valider</text>
+    <text x="120" y="152" fill="#000" font-size="8" text-anchor="middle">la trajectoire</text>`,
+    p: ['Touche l’espace : une route s’affiche, avec son coût en gaz.',
+      '<b>Valider</b> confie le vaisseau au pilote auto. Le réacteur te rend la main.',
+      'Le bouton ? montre une solution.'] },
+  { t: 'Les étoiles', svg: `
     <circle cx="20" cy="20" r="40" fill="#ffb22e"/>
     <circle cx="120" cy="80" r="24" fill="#3b6ee0"/>
     <path d="M108 101 L180 160 L215 132 L138 62 Z" fill="#000" fill-opacity=".55"/>
     <g fill="#8d8070"><circle cx="30" cy="140" r="4"/><circle cx="48" cy="150" r="3"/><circle cx="66" cy="157" r="4"/><circle cx="14" cy="128" r="3"/></g>
     <text x="150" y="40" fill="#ffd60a" font-size="20">★ ★ ★</text>`,
-    p: ['Les soleils brûlent, les ceintures d’astéroïdes broient, et dans l’ombre d’une planète ton réacteur s’éteint.',
-      'Arrive vite, avec du gaz en réserve, et décroche les <b>3 étoiles</b>. Bon voyage !'] },
+    p: ['Les soleils brûlent. Les astéroïdes ne pardonnent pas. L’ombre coupe le réacteur solaire !',
+      'Trois étoiles : arriver, garder la moitié du gaz, battre le chrono.'] },
 ];
+
 
 function openTutorial(page = 0) {
   document.getElementById('tutoScr')?.remove();
