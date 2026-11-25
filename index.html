@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 74; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 77; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -62,7 +62,8 @@ const gOf = () => shipG[shipKind] ?? G_DEFAULT;
 const REDRESS_COST = 0.15; // gaz (secondes de pleine poussée) par radian tourné
 let shipRed = {};
 try { shipRed = JSON.parse(localStorage.getItem('orbite-redressement') || '{}') || {}; } catch (e) {}
-const redOf = () => shipRed[shipKind] ?? 0;
+const RED_DEFAULT = 0.15; // redressement par défaut tant que l'utilisateur n'a rien réglé
+const redOf = () => shipRed[shipKind] ?? RED_DEFAULT;
 let fixedNorth = false; // commande : vaisseau orienté comme en vol (boussole) ou toujours vers le nord (fixe)
 try { fixedNorth = localStorage.getItem('orbite-commande') === 'fixe'; } catch (e) {}
 
@@ -513,7 +514,9 @@ function drawShadows(Bs) {
     for (let j = 0; j < SH_SAMPLES; j++) {
       // pénombre : nette avec une seule étoile, plus diffuse quand plusieurs lumières se mêlent ; limitée pour rester lisible
       const off = (j / (SH_SAMPLES - 1) - 0.5) * 2 * (stars.length === 1 ? Math.min(0.25 * S.r, 6) : Math.min(0.8 * S.r, 30));
-      tc.setTransform(1, 0, 0, 1, 0, 0); tc.clearRect(0, 0, cw, ch); tc.setTransform(tf); tc.fillStyle = '#fff';
+      // tous les cônes d'ombre de ce point de l'étoile en un seul tracé (même sens de rotation : leur union ne se cumule pas),
+      // ajoutés directement au masque : pas de calque intermédiaire à vider puis recopier à chaque échantillon
+      mc.setTransform(tf); mc.fillStyle = '#fff'; mc.beginPath();
       for (const p of Bs) {
         if (p.star) continue;
         let dx = p.x - S.x, dy = p.y - S.y, d = Math.hypot(dx, dy);
@@ -523,15 +526,15 @@ function drawShadows(Bs) {
         const base = Math.atan2(-dy, -dx), b = Math.acos(Math.min(1, p.r / d)), far = 20000;
         const T1 = [p.x + Math.cos(base + b) * p.r, p.y + Math.sin(base + b) * p.r], T2 = [p.x + Math.cos(base - b) * p.r, p.y + Math.sin(base - b) * p.r];
         const e1 = Math.hypot(T1[0] - sx, T1[1] - sy), e2 = Math.hypot(T2[0] - sx, T2[1] - sy);
-        tc.beginPath();
-        tc.moveTo(T1[0], T1[1]); tc.lineTo(T1[0] + (T1[0] - sx) / e1 * far, T1[1] + (T1[1] - sy) / e1 * far);
-        tc.lineTo(T2[0] + (T2[0] - sx) / e2 * far, T2[1] + (T2[1] - sy) / e2 * far); tc.lineTo(T2[0], T2[1]);
-        tc.arc(p.x, p.y, p.r, base - b, base + b, true); // le long de la face cachée : l'astre lui-même n'est pas recouvert
-        tc.closePath(); tc.fill();
+        mc.moveTo(T1[0], T1[1]); mc.lineTo(T1[0] + (T1[0] - sx) / e1 * far, T1[1] + (T1[1] - sy) / e1 * far);
+        mc.lineTo(T2[0] + (T2[0] - sx) / e2 * far, T2[1] + (T2[1] - sy) / e2 * far); mc.lineTo(T2[0], T2[1]);
+        mc.arc(p.x, p.y, p.r, base - b, base + b, true); // le long de la face cachée : l'astre lui-même n'est pas recouvert
+        mc.closePath();
       }
-      tc.globalCompositeOperation = 'destination-out'; for (const q of stars) { tc.beginPath(); tc.arc(q.x, q.y, q.r * 1.05, 0, Math.PI * 2); tc.fill(); } tc.globalCompositeOperation = 'source-over'; // une étoile n'est jamais dans l'ombre
-      mc.globalCompositeOperation = 'lighter'; mc.globalAlpha = 1 / SH_SAMPLES; mc.drawImage(tmp, 0, 0); mc.globalAlpha = 1; mc.globalCompositeOperation = 'source-over';
+      mc.globalCompositeOperation = 'lighter'; mc.globalAlpha = 1 / SH_SAMPLES; mc.fill(); mc.globalAlpha = 1; mc.globalCompositeOperation = 'source-over';
     }
+    mc.globalCompositeOperation = 'destination-out'; for (const q of stars) { mc.beginPath(); mc.arc(q.x, q.y, q.r * 1.05, 0, Math.PI * 2); mc.fill(); } mc.globalCompositeOperation = 'source-over'; // une étoile n'est jamais dans l'ombre
+    mc.setTransform(1, 0, 0, 1, 0, 0);
     // 2) obscurité : chaque ombre pèse selon la part de lumière de l'étoile (taille × intensité)
     ac.globalCompositeOperation = 'lighter'; ac.globalAlpha = share * 0.8; ac.drawImage(msk, 0, 0); ac.globalAlpha = 1; ac.globalCompositeOperation = 'source-over';
     // zone cachée de toutes les étoiles (réacteur coupé) : un cran plus sombre, bien reconnaissable
@@ -947,7 +950,8 @@ const menuBtn = () => ({ x: 2, y: safeTop + 6, w: 34, h: 44 });
 // liste des niveaux par pages de 20 (onglets 1–20, 21–40…)
 const PER_PAGE = 20;
 // un niveau s'ouvre quand le précédent a au moins une étoile (ceux déjà réussis restent ouverts)
-const levelOpen = i => i === 0 || starsOf(i - 1) > 0 || starsOf(i) > 0 || opened.has(i);
+const ALL_OPEN = false; // vrai uniquement dans la copie publiée en artefact (tests) : tous les niveaux débloqués
+const levelOpen = i => ALL_OPEN || i === 0 || starsOf(i - 1) > 0 || starsOf(i) > 0 || opened.has(i);
 let levelPage = 0;
 const pageCount = () => Math.ceil(LV.length / PER_PAGE);
 function pageTabs() {
@@ -1198,7 +1202,7 @@ function openGModal() {
     val.textContent = v ? Math.round(v * 100) + ' %' : 'Arrêt'; val.style.color = v ? '#ffd60a' : 'rgba(255,255,255,.55)';
     warn.style.opacity = v ? 1 : 0.6;
   };
-  const setR = y => { const r = track.getBoundingClientRect(), v = Math.max(0, Math.min(1, Math.round((1 - (y - r.top) / r.height) * 20) / 20)); if (v) shipRed[shipKind] = v; else delete shipRed[shipKind]; save(); showR(); };
+  const setR = y => { const r = track.getBoundingClientRect(), v = Math.max(0, Math.min(1, Math.round((1 - (y - r.top) / r.height) * 20) / 20)); shipRed[shipKind] = v; save(); showR(); };
   const zone = el('div', { style: 'padding:15px 20px;touch-action:none;cursor:pointer;display:flex;justify-content:center' }, track);
   zone.addEventListener('pointerdown', e => { e.preventDefault(); zone.setPointerCapture(e.pointerId); setR(e.clientY); });
   zone.addEventListener('pointermove', e => { if (zone.hasPointerCapture(e.pointerId)) setR(e.clientY); });
