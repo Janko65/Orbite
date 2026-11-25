@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 72; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 73; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -68,6 +68,14 @@ try { fixedNorth = localStorage.getItem('orbite-commande') === 'fixe'; } catch (
 
 try { lvl = Math.min(LV.length - 1, parseInt(localStorage.getItem('orbite-niveau') || '0', 10) || 0); } catch (e) {}
 try { medals = JSON.parse(localStorage.getItem('orbite-medailles') || '{}') || {}; } catch (e) {}
+// niveaux débloqués, gardés à part : un niveau modifié perd ses étoiles mais la suite reste ouverte
+let opened = new Set();
+try { (JSON.parse(localStorage.getItem('orbite-ouverts') || '[]') || []).forEach(i => opened.add(+i)); } catch (e) {}
+function noteOpened() {
+  Object.keys(medals).forEach(k => { if ((medals[k] || []).some(Boolean)) { opened.add(+k); opened.add(+k + 1); } });
+  try { localStorage.setItem('orbite-ouverts', JSON.stringify([...opened])); } catch (e) {}
+}
+noteOpened(); // avant la vérification des niveaux modifiés
 
 // empreinte d'un niveau (tout ce qui change le jeu : astres, départ, objectifs, ceintures, gaz, chrono)
 function levelSig(l) {
@@ -652,7 +660,7 @@ function loadLevel(i, obj) {
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; particles = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
+  fuel = L.fuel; flashes = []; particles = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
   auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {};
@@ -720,6 +728,7 @@ function win() {
     const prev = medals[lvl] || [false, false, false];
     medals[lvl] = prev.map((v, k) => v || got[k]);
     try { localStorage.setItem('orbite-medailles', JSON.stringify(medals)); } catch (e) {}
+    noteOpened();
   }
   result = { got, fuelPct, time: elapsed };
   state = 'won'; stateT = 0; touches.clear();
@@ -843,18 +852,77 @@ function homeLayout() {
   const u = Math.max(1.6, Math.min(5, ((py - R) - (clearY + 36 + 30)) / 19)), sy = py - R - 8.6 * u, k = measureShip(shipKind);
   const ship = { cx: W / 2, cy: sy, u, R, py, x: W / 2 + k.l * u - 12, y: sy + k.t * u - 12, w: (k.r - k.l) * u + 24, h: (k.b - k.t) * u + 24 };
   return { titleY, ship, play, levels: { x: W / 2 - bw - 5, y: y1, w: bw, h: 48 }, tuto: { x: W / 2 + 5, y: y1, w: bw, h: 48 },
-    editor: { x: W / 2 - bw - 5, y: y1 + 58, w: bw, h: 48 }, update: { x: W / 2 + 5, y: y1 + 58, w: bw, h: 48 }, clear: { x: W / 2 - 100, y: clearY, w: 200, h: 36 } };
+    editor: { x: W / 2 - bw - 5, y: y1 + 58, w: bw, h: 48 }, update: { x: W / 2 + 5, y: y1 + 58, w: bw, h: 48 }, clear: { x: W / 2 - 100, y: clearY, w: 200, h: 36 },
+    save: { x: W - 56, y: H - Math.max(safeBot, 10) - 52, w: 44, h: 44 } }; // disquette : sauvegarder / récupérer
 }
 const playBtn = () => homeLayout().play;
 const levelsBtn = () => homeLayout().levels;
 const editorBtn = () => homeLayout().editor;
 
 // effacer la progression du joueur (étoiles, dernier niveau) ; le vaisseau choisi est conservé
+// ===== Sauvegarde : code « message extraterrestre » (impossible à retoucher à la main : il est signé) =====
+const ALIEN = '⊕⊖⊗⊘⊙⊚⊛⊜⊝⊞⊟⊠⊡⋄⋇⋈⋉⋊⋋⋌⌬⌭⌮⌯⌰⌱⌲⌳⌴⌵⍜⍝⍟⍦⍧⍨⍫⍬⍭⍱⍲⍼⎈⎉⎊⎋⎌⏀⏁⏂⏃⏄⏅⏆⏇⏈⏉⏊⏋⏌⟟⟒⟊⟁';
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const alienOf = {}, b64Of = {};
+[...ALIEN].forEach((g, i) => { alienOf[B64[i]] = g; b64Of[g] = B64[i]; });
+const fnv = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
+function progressCode() {
+  let sigs = {}; try { sigs = JSON.parse(localStorage.getItem('orbite-empreintes') || '{}') || {}; } catch (e) {}
+  const m = LV.map((_, i) => { const md = medals[i] || []; return (md[0] ? 1 : 0) + (md[1] ? 2 : 0) + (md[2] ? 4 : 0); }).join('');
+  const data = JSON.stringify({ v: 1, m, s: LV.map((l, i) => medals[i] ? levelSig(l) : ''), o: [...opened], n: lvl, k: shipKind });
+  const b = btoa(unescape(encodeURIComponent(data))).replace(/=+$/, ''), h = fnv(data);
+  const chk = Array.from({ length: 6 }, (_, k) => B64[(h >>> (k * 5)) & 63]).join('');
+  const glyphs = [...(b + chk)].map(c => alienOf[c]).join('');
+  return '👽 ' + glyphs.match(/.{1,5}/gu).join(' ') + ' 🛸';
+}
+function readProgressCode(txt) {
+  const raw = [...txt].filter(g => b64Of[g] !== undefined).map(g => b64Of[g]).join('');
+  if (raw.length < 10) return null;
+  const b = raw.slice(0, -6), chk = raw.slice(-6);
+  let data; try { data = decodeURIComponent(escape(atob(b + '==='.slice((b.length + 3) % 4)))); } catch (e) { return null; }
+  const h = fnv(data);
+  if (Array.from({ length: 6 }, (_, k) => B64[(h >>> (k * 5)) & 63]).join('') !== chk) return null; // signature fausse : message retouché
+  try { const o = JSON.parse(data); return o && o.v === 1 && typeof o.m === 'string' ? o : null; } catch (e) { return null; }
+}
+function applyProgress(o) {
+  medals = {}; opened = new Set((o.o || []).map(Number).filter(i => i >= 0 && i < LV.length));
+  [...o.m].forEach((c, i) => { const v = +c; if (!LV[i] || !v) return; const md = [!!(v & 1), !!(v & 2), !!(v & 4)]; opened.add(i); opened.add(i + 1); if (!o.s || o.s[i] === levelSig(LV[i])) medals[i] = md; }); // niveau modifié depuis : ses étoiles sont à refaire, la suite reste ouverte
+  lvl = Math.max(0, Math.min(LV.length - 1, o.n | 0));
+  if (SHIPS.some(sh => sh.id === o.k)) shipKind = o.k;
+  try {
+    localStorage.setItem('orbite-medailles', JSON.stringify(medals)); localStorage.setItem('orbite-ouverts', JSON.stringify([...opened]));
+    localStorage.setItem('orbite-niveau', String(lvl)); localStorage.setItem('orbite-vaisseau', shipKind);
+    localStorage.setItem('orbite-empreintes', JSON.stringify(Object.fromEntries(LV.map((l, i) => [i, levelSig(l)]))));
+  } catch (e) {}
+}
+function openSaveModal() {
+  modal((box, close) => {
+    const out = el('div', { style: 'font-size:13px;line-height:1.4;min-height:18px;text-align:center' });
+    const code = el('div', { style: 'display:none;font-size:17px;line-height:1.6;letter-spacing:1px;word-break:break-all;padding:12px;border-radius:12px;background:#10141c;border:1px solid rgba(127,224,208,.4);color:#7fe0d0;user-select:all;-webkit-user-select:all;max-height:180px;overflow:auto' });
+    const area = el('textarea', { placeholder: 'Colle ici le message extraterrestre…', style: 'display:none;width:100%;min-height:110px;font-size:16px;border-radius:12px;padding:10px;background:#10141c;color:#7fe0d0;border:1px solid rgba(255,255,255,.2)' });
+    const go = el('button', { class: 'pri', style: 'display:none', onclick: () => {
+      const o = readProgressCode(area.value);
+      if (!o) { out.style.color = '#ff6b61'; out.textContent = '📡 Signal brouillé… Ce message n’est pas d’origine extraterrestre (ou il a été retouché).'; return; }
+      confirmBox('Remplacer ta progression par celle du message ?', () => { applyProgress(o); out.style.color = '#7fe0d0'; out.textContent = `🛸 Transmission reçue : ${LV.reduce((a, _, i) => a + starsOf(i), 0)} étoiles récupérées.`; });
+    } }, 'Décoder le message');
+    box.append(el('h3', {}, 'Transmission 👽'),
+      el('div', { class: 'row' },
+        el('button', { style: 'flex:1', onclick: () => {
+          code.textContent = progressCode(); code.style.display = 'block'; area.style.display = go.style.display = 'none';
+          const txt = code.textContent;
+          (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => { out.style.color = '#7fe0d0'; out.textContent = 'Message copié : garde-le précieusement (ou envoie-le à ton autre appareil).'; },
+            () => { out.style.color = '#fff'; out.textContent = 'Sélectionne le message pour le copier.'; });
+        } }, 'Sauvegarder'),
+        el('button', { style: 'flex:1', onclick: () => { area.style.display = 'block'; go.style.display = 'block'; code.style.display = 'none'; out.textContent = ''; } }, 'Récupérer')),
+      code, area, go, out, el('button', { onclick: close }, 'Fermer'));
+  });
+}
+
 function clearProgress() {
   confirmBox('Effacer toute ta progression (étoiles et niveau atteint) ?', () => {
-    medals = {}; lvl = 0;
+    medals = {}; lvl = 0; opened = new Set();
     for (const k of ['mine', 'recus']) { const a = persoList(k); a.forEach(l => delete l.stars); persoSave(k, a); }
-    try { localStorage.removeItem('orbite-medailles'); localStorage.removeItem('orbite-niveau'); } catch (e) {}
+    try { localStorage.removeItem('orbite-medailles'); localStorage.removeItem('orbite-niveau'); localStorage.removeItem('orbite-ouverts'); } catch (e) {}
   });
 }
 
@@ -879,7 +947,7 @@ const menuBtn = () => ({ x: 2, y: safeTop + 6, w: 34, h: 44 });
 // liste des niveaux par pages de 20 (onglets 1–20, 21–40…)
 const PER_PAGE = 20;
 // un niveau s'ouvre quand le précédent a au moins une étoile (ceux déjà réussis restent ouverts)
-const levelOpen = i => i === 0 || starsOf(i - 1) > 0 || starsOf(i) > 0;
+const levelOpen = i => i === 0 || starsOf(i - 1) > 0 || starsOf(i) > 0 || opened.has(i);
 let levelPage = 0;
 const pageCount = () => Math.ceil(LV.length / PER_PAGE);
 function pageTabs() {
@@ -919,7 +987,8 @@ cv.addEventListener('pointerdown', e => {
     else if (inBox(e, editorBtn())) openEditorLogin();
     else {
       const hl = homeLayout();
-      if (inBox(e, hl.ship)) openShipPicker();
+      if (inBox(e, hl.save)) openSaveModal();
+      else if (inBox(e, hl.ship)) openShipPicker();
       else if (inBox(e, hl.clear)) clearProgress();
       else if (inBox(e, hl.update)) checkUpdate();
     }
@@ -1150,7 +1219,10 @@ function openGModal() {
 function tick() {
   if (state !== 'play') { // fin de partie : le temps continue (astres, lunes, vaisseau posé), rien ne se commande
     const h = DT / SUB;
-    if (!ship.dead) for (let k = 0; k < SUB; k++) physStep(launched ? snapshot(L, wt + k * h) : B, ship, null, h);
+    if (!ship.dead) for (let k = 0; k < SUB; k++) { // le vaisseau reste destructible (le résultat obtenu ne change pas)
+      const r = physStep(launched ? snapshot(L, wt + k * h) : B, ship, null, h);
+      if (r.crash) { boom(r.crash === 'belt' ? -1 : (r.p ?? -1), r.crash); break; }
+    }
     if (launched) wt += DT;
     B = snapshot(L, wt);
     return;
@@ -1246,7 +1318,7 @@ function tick() {
 }
 
 // la lumière reviendra-t-elle sur le vaisseau posé ? (astres en mouvement, sur les 2 prochaines minutes)
-let waitLight = null, redressFx = { sg: 1, t: -1e9 };
+let waitLight = null, redressFx = { sg: 1, t: -1e9 }, flashes = []; // flashes : éclair bref au point d'impact
 function lightReturns() {
   if (!hasMoons(L)) return false;
   let j = 0, bd = Infinity;
@@ -1308,6 +1380,7 @@ function boom(pi = -1, why = '') {
         life: Infinity, max: 1, rgb: body, sz: sz * (0.8 + Math.random() * 0.5), grav: true, slide: true }); // reste posée jusqu'à la partie suivante
     }
   }
+  flashes.push({ x: ix, y: iy, r: 26 + sp * 0.25, t0: performance.now(), rgb: star ? body : '255,255,255' }); // l'instant du contact
   ship.dead = true;
 }
 
@@ -1395,6 +1468,13 @@ function drawHome() {
   button(hl.levels, 'Niveaux', false);
   button(hl.tuto, 'Tutoriel', false);
   button(hl.editor, 'Créer un niveau', false);
+  { // disquette
+    const b = hl.save, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.beginPath(); ctx.arc(cx, cy, 21, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - 10, cy - 10); ctx.lineTo(cx + 6, cy - 10); ctx.lineTo(cx + 10, cy - 6); ctx.lineTo(cx + 10, cy + 10); ctx.lineTo(cx - 10, cy + 10); ctx.closePath(); ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.fillRect(cx - 6, cy - 10, 10, 6); ctx.strokeRect(cx - 6, cy + 2, 12, 8);
+  }
   button(hl.update, 'Mises à jour', false);
   ctx.font = `400 12px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.textAlign = 'center';
   if (updState) { ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fillText(updState, W / 2, hl.update.y + hl.update.h + 14); ctx.fillStyle = 'rgba(255,255,255,0.5)'; }
@@ -1569,6 +1649,12 @@ function draw() {
     ctx.fillStyle = `rgba(${q.rgb || '255,255,255'},${Math.max(0, Math.min(1, q.life / q.max))})`;
     const qs = (q.sz || (q.rgb ? 2 : 1.2)) / scale; // poussière d'anneaux un peu plus grosse ; coups de redressement plus fins
     ctx.fillRect(q.x - qs, q.y - qs, qs * 2, qs * 2);
+  }
+  flashes = flashes.filter(f => performance.now() - f.t0 < 260);
+  for (const f of flashes) { // éclair d'impact : très bref, puis la simulation continue
+    const a = 1 - (performance.now() - f.t0) / 260, g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (1 + (1 - a) * 0.6));
+    g.addColorStop(0, `rgba(${f.rgb},${0.95 * a})`); g.addColorStop(0.35, `rgba(${f.rgb},${0.45 * a})`); g.addColorStop(1, `rgba(${f.rgb},0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * 1.6, 0, Math.PI * 2); ctx.fill();
   }
 
   if (!ship.dead) drawRocket(ship.x, ship.y, ship.ang, Math.max(1, 1.15 / scale), shipDarkness(B, ship.x, ship.y));
