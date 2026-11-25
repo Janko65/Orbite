@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 80; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 81; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -85,14 +85,38 @@ function levelSig(l) {
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36);
 }
-// au démarrage : un niveau modifié depuis qu'on l'a joué perd ses étoiles (la mémoire de ce niveau est effacée)
+// empreinte des étoiles : le parcours (astres, départ, objectifs, ceintures), puis le gaz et le chrono en clair,
+// pour ne retirer que les étoiles dont l'objectif est devenu plus dur
+function medalSig(l) {
+  const str = JSON.stringify([l.planets, l.start, l.steps, l.belts || null]);
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36) + '~' + l.fuel + '~' + l.time;
+}
+// anciennes empreintes (un seul bloc, jusqu'à la v80) des niveaux retouchés en v81 : [empreinte, parcours, gaz, chrono] d'alors
+const LEGACY_SIGS = { 20: ['1hkjt4m', '1az2acr', 2.8, 12], 27: ['olx6vj', 'ya1l2p', 3.8, 12], 29: ['pf82ej', '1xn6hcu', 6.3, 11], 33: ['1503dvk', '9tmogz', 10.8, 26], 34: ['vzwooa', 'tztnfq', 7.3, 44] };
+function asMedalSig(i, sg) {
+  if (!sg || sg.includes('~')) return sg;
+  if (LV[i] && sg === levelSig(LV[i])) return medalSig(LV[i]); // niveau inchangé depuis
+  const g = LEGACY_SIGS[i]; return g && g[0] === sg ? g[1] + '~' + g[2] + '~' + g[3] : null;
+}
+// étoiles gardées quand un niveau a changé : parcours différent → tout est à refaire ; sinon l'étoile gaz (ou chrono)
+// reste si le nouvel objectif est égal ou plus large que celui qu'on a réussi
+function keptMedals(i, oldSig, md) {
+  const sg = asMedalSig(i, oldSig); if (!sg || !LV[i]) return null;
+  const [g0, f0, t0] = sg.split('~'), [g1, f1, t1] = medalSig(LV[i]).split('~');
+  if (g0 !== g1) return null;
+  const r = [!!md[0], !!md[1] && +f1 >= +f0, !!md[2] && +t1 >= +t0];
+  return r.some(Boolean) ? r : null;
+}
+// au démarrage : un niveau modifié depuis qu'on l'a joué ne perd que les étoiles dont l'objectif a changé
 function checkModifiedLevels() {
   let sigs = {};
   try { sigs = JSON.parse(localStorage.getItem('orbite-empreintes') || '{}') || {}; } catch (e) {}
   const next = {};
   LV.forEach((l, i) => {
-    const sg = levelSig(l);
-    if (medals[i] && sigs[i] && sigs[i] !== sg) delete medals[i];
+    const sg = medalSig(l);
+    if (medals[i] && sigs[i] && sigs[i] !== sg) { const k = keptMedals(i, sigs[i], medals[i]); if (k) medals[i] = k; else delete medals[i]; }
     next[i] = sg;
   });
   Object.keys(medals).forEach(k => { if (!LV[k]) delete medals[k]; });
@@ -874,7 +898,7 @@ const fnv = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { 
 function progressCode() {
   let sigs = {}; try { sigs = JSON.parse(localStorage.getItem('orbite-empreintes') || '{}') || {}; } catch (e) {}
   const m = LV.map((_, i) => { const md = medals[i] || []; return (md[0] ? 1 : 0) + (md[1] ? 2 : 0) + (md[2] ? 4 : 0); }).join('');
-  const data = JSON.stringify({ v: 1, m, s: LV.map((l, i) => medals[i] ? levelSig(l) : ''), o: [...opened], n: lvl, k: shipKind });
+  const data = JSON.stringify({ v: 1, m, s: LV.map((l, i) => medals[i] ? medalSig(l) : ''), o: [...opened], n: lvl, k: shipKind });
   const b = btoa(unescape(encodeURIComponent(data))).replace(/=+$/, ''), h = fnv(data);
   const chk = Array.from({ length: 6 }, (_, k) => B64[(h >>> (k * 5)) & 63]).join('');
   const glyphs = [...(b + chk)].map(c => alienOf[c]).join('');
@@ -891,13 +915,13 @@ function readProgressCode(txt) {
 }
 function applyProgress(o) {
   medals = {}; opened = new Set((o.o || []).map(Number).filter(i => i >= 0 && i < LV.length));
-  [...o.m].forEach((c, i) => { const v = +c; if (!LV[i] || !v) return; const md = [!!(v & 1), !!(v & 2), !!(v & 4)]; opened.add(i); opened.add(i + 1); if (!o.s || o.s[i] === levelSig(LV[i])) medals[i] = md; }); // niveau modifié depuis : ses étoiles sont à refaire, la suite reste ouverte
+  [...o.m].forEach((c, i) => { const v = +c; if (!LV[i] || !v) return; const md = [!!(v & 1), !!(v & 2), !!(v & 4)]; opened.add(i); opened.add(i + 1); if (!o.s || o.s[i] === medalSig(LV[i])) medals[i] = md; else { const k = keptMedals(i, o.s[i], md); if (k) medals[i] = k; } }); // niveau modifié depuis : seules les étoiles devenues plus dures sont à refaire, la suite reste ouverte
   lvl = Math.max(0, Math.min(LV.length - 1, o.n | 0));
   if (SHIPS.some(sh => sh.id === o.k)) shipKind = o.k;
   try {
     localStorage.setItem('orbite-medailles', JSON.stringify(medals)); localStorage.setItem('orbite-ouverts', JSON.stringify([...opened]));
     localStorage.setItem('orbite-niveau', String(lvl)); localStorage.setItem('orbite-vaisseau', shipKind);
-    localStorage.setItem('orbite-empreintes', JSON.stringify(Object.fromEntries(LV.map((l, i) => [i, levelSig(l)]))));
+    localStorage.setItem('orbite-empreintes', JSON.stringify(Object.fromEntries(LV.map((l, i) => [i, medalSig(l)]))));
   } catch (e) {}
 }
 function openSaveModal() {
