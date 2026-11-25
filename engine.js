@@ -455,7 +455,11 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
     // chrono : meilleur temps en gardant 50 % de gaz ; ou (margins.timeAny) meilleur temps tout court, sans dépasser le réservoir
     const lim = margins.timeAny ? F : F / 2, half = sols.filter(s => s.used <= lim);
     const bt = yield* climb(half.reduce((a, b) => b.t < a.t ? b : a), 900 * f, (r, b) => r.t < b.t, r => r.used <= lim);
-    const T = Math.max(1, Math.ceil(bt.t * TAU));
+    // trajectoire la plus rapide presque droite (course à pleine poussée, freinage au dernier moment) : hors de portée d'un humain,
+    // le chrono est alors élargi (margins.timeStraight, ×1,6 par défaut)
+    const fp = fly(L, bt.P, null), pl = fp.path.reduce((a, p, i) => i ? a + hyp(p[0] - fp.path[i - 1][0], p[1] - fp.path[i - 1][1]) : 0, 0);
+    const p0 = fp.path[0], p1 = fp.path[fp.path.length - 1], straight = pl / Math.max(1, hyp(p1[0] - p0[0], p1[1] - p0[1]));
+    const T = Math.max(1, Math.ceil(bt.t * (straight < 1.35 ? Math.max(TAU, margins.timeStraight || 1.6) : TAU)));
     L.fuel = F; L.time = T;
     const bh = yield* climb(sols.filter(s => s.used <= F).reduce((a, b) => ratioCost(L, b) < ratioCost(L, a) ? b : a), 700 * f, (r, b) => ratioCost(L, r) < ratioCost(L, b), r => r.used <= F);
     // solution conseillée robuste : elle doit réussir aussi arrondie et légèrement perturbée
@@ -472,7 +476,7 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
     for (const c of cands.slice(0, 300)) { const P = round(c.P); if (robust(P)) { hint = P; break; } if (++k % 5 === 0) yield 1; }
     if (!hint) return { error: 'Pas de solution conseillée assez robuste' };
     const chk = fly(L, hint, null);
-    return { minFuel: bf.used, fuel: F, tFastHalf: bt.t, time: T, hint, hintUsed: chk.used, hintT: chk.t };
+    return { minFuel: bf.used, fuel: F, tFastHalf: bt.t, time: T, straight, hint, hintUsed: chk.used, hintT: chk.t };
   } finally { Object.assign(TOL, tol0); }
 }
 
