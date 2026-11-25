@@ -24,20 +24,20 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 68; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 70; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
 const cv = document.getElementById('c'); let ctx = cv.getContext('2d'); // ctx est prêté au dessin du vaisseau dans la fenêtre du centre de gravité
 const safeEl = document.getElementById('safe');
 
-let W, H, dpr, safeTop, safeBot, bandTop, gameH, scale, ox, oy, baseOy = 0, camY = 0, ctrl = { x: 0, y: 0, r: 50 }, bgStars = [];
+let W, H, dpr, safeTop, safeBot, bandTop, gameH, scale, ox, oy, baseOy = 0, camY = 0, baseScale = 1, baseOx = 0, ctrl = { x: 0, y: 0, r: 50 }, bgStars = [];
 let lvl = 0, L, ship, fuel, state = 'play', stateT = 0, msg = '', sub = '', idleT = 0;
 let mission, departed = false, elapsed = 0, result = null, textures = [];
 let wt = 0, launched = false, B = []; // temps monde (depuis le premier jet), astres à cet instant
 // niveaux : ceux publiés depuis l'éditeur (sur cet appareil) remplacent ceux de niveaux.js
 let LV = LEVELS;
-try { const pub = JSON.parse(localStorage.getItem('orbite-niveaux-publies') || 'null'); if (Array.isArray(pub) && pub.length) LV = pub; } catch (e) {}
+try { const pub = JSON.parse(localStorage.getItem('orbite-niveaux-publies') || 'null'); if (Array.isArray(pub) && pub.length) LV = pub.length < LEVELS.length ? pub.concat(LEVELS.slice(pub.length)) : pub; } catch (e) {} // niveaux publiés sur l'appareil : complétés par les nouveaux niveaux officiels
 let selPlanet = -1, taps = [], plan = null, planJob = null;
 let showHelp = false, helpRes = null, helpJob = null;
 let auto = null, simFlight = false, curTh = null, shadowNow = false, predHit = -1; // predHit : astre que touche la trajectoire prévue (−1 = aucun)
@@ -104,8 +104,8 @@ function resize() {
   ctrl.x = W / 2; ctrl.y = H - Math.max(safeBot, 6) - ctrl.r - 4;
   bandTop = ctrl.y - ctrl.r - 30; // haut de la zone des commandes
   gameH = bandTop - safeTop;
-  scale = Math.min(W / WORLD_W, (H - safeTop) / WORLD_H);
-  ox = (W - WORLD_W * scale) / 2;
+  scale = baseScale = Math.min(W / WORLD_W, (H - safeTop) / WORLD_H);
+  ox = baseOx = (W - WORLD_W * scale) / 2;
   baseOy = safeTop + (H - safeTop - WORLD_H * scale) / 2; // la vue montre toujours 2000 m de haut
   oy = baseOy - camY * scale;
   homeTex = paintBody({ type: 'terre' }, Math.min(W * 0.75, 340) * dpr, 4242);
@@ -645,12 +645,13 @@ function loadLevel(i, obj) {
   cancelJobs();
   { const key = (obj ? 'p' : 'o') + i + ':' + ((obj || LV[i] || {}).name || ''); if (key !== nameKey || screen !== 'game') nameT = sweepT = performance.now(); nameKey = key; }
   lvl = i; L = obj || LV[i]; invalidate(L);
+  if (!obj) levelPage = Math.floor(i / PER_PAGE);
   if (recMode) recMode.runs = [];
   if (!L.fuel) L.fuel = 5;
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; particles = []; touches.clear(); idleT = 0; waitLight = null;
+  fuel = L.fuel; particles = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
   auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {};
@@ -688,7 +689,19 @@ function shadowCaster() {
   }
   return -1;
 }
+// aide « ? » : débloquée après 5 échecs sur le niveau (compteur gardé par niveau, d'après son empreinte)
+const HELP_TRIES = 5;
+let fails = {};
+try { fails = JSON.parse(localStorage.getItem('orbite-echecs') || '{}') || {}; } catch (e) {}
+const failsOf = () => fails[levelSig(L)] || 0;
+const helpOpen = () => testMode || failsOf() >= HELP_TRIES;
+let helpTipT = -1e9;
+function toggleHelp() {
+  if (!helpOpen()) { helpTipT = performance.now(); return; }
+  showHelp = !showHelp; if (showHelp) runHelp();
+}
 function lose(why, pi = -1) {
+  if (!testMode && state === 'play') { const k = levelSig(L); fails[k] = (fails[k] || 0) + 1; try { localStorage.setItem('orbite-echecs', JSON.stringify(fails)); } catch (e) {} }
   if (why === 'speed' || why === 'angle' || why === 'star' || why === 'belt') boom(pi, why);
   [msg, sub] = LOSS[why];
   if (why === 'shadow') pi = shadowCaster();
@@ -713,6 +726,7 @@ function win() {
 }
 
 function depart() {
+  departT = performance.now(); // les numéros d'objectifs s'effacent au décollage
   crossOff = L.start.p; // pas de croix au décollage
   departed = true; showHelp = false; taps = []; plan = null; tip = null;
   cancelJobs();
@@ -861,11 +875,21 @@ async function checkUpdate() {
 }
 const backBtn = () => ({ x: 6, y: safeTop + 6, w: 110, h: 44 });
 const menuBtn = () => ({ x: 2, y: safeTop + 6, w: 34, h: 44 });
+// liste des niveaux par pages de 20 (onglets 1–20, 21–40…)
+const PER_PAGE = 20;
+let levelPage = 0;
+const pageCount = () => Math.ceil(LV.length / PER_PAGE);
+function pageTabs() {
+  const n = pageCount(), w = Math.min(110, (W - 32 - 8 * (n - 1)) / n), x0 = W / 2 - (n * w + (n - 1) * 8) / 2;
+  return Array.from({ length: n }, (_, k) => ({ k, x: x0 + k * (w + 8), y: safeTop + 54, w, h: 34 }));
+}
 function levelTiles() {
-  const cols = 4, gap = 10, top = safeTop + 74, tw = (W - 32 - gap * (cols - 1)) / cols;
+  const cols = 4, gap = 10, top = safeTop + 100, tw = (W - 32 - gap * (cols - 1)) / cols;
   const NAME_H = 16; // place du nom sous chaque case
   const th = Math.min(tw * 1.05, (H - safeBot - top - 16 - gap * 4 - NAME_H * 5) / 5);
-  return LV.map((_, i) => ({ x: 16 + (i % cols) * (tw + gap), y: top + Math.floor(i / cols) * (th + NAME_H + gap), w: tw, h: th }));
+  const out = [];
+  for (let j = 0; j < PER_PAGE; j++) { const i = levelPage * PER_PAGE + j; if (i >= LV.length) break; out.push({ i, x: 16 + (j % cols) * (tw + gap), y: top + Math.floor(j / cols) * (th + NAME_H + gap), w: tw, h: th }); }
+  return out;
 }
 const restartBtn = () => ({ x: W - 118, y: safeTop + 10, w: 110, h: 36 });
 const helpBtn = () => ({ x: W - 166, y: safeTop + 6, w: 44, h: 44 });
@@ -900,9 +924,23 @@ cv.addEventListener('pointerdown', e => {
   }
   if (screen === 'levels') {
     if (inBox(e, backBtn())) { screen = 'home'; return; }
-    const k = levelTiles().findIndex(b => inBox(e, b));
-    if (k >= 0) { loadLevel(k); screen = 'game'; }
+    const tb = pageTabs().find(b => inBox(e, b));
+    if (tb) { levelPage = tb.k; return; }
+    const t = levelTiles().find(b => inBox(e, b));
+    if (t) { loadLevel(t.i); screen = 'game'; }
     return;
+  }
+  // avant le lancement : deux doigts dans la zone de jeu = zoom / déplacement (le premier appui est alors annulé)
+  if (state === 'play' && !departed && e.clientY < bandTop && e.clientY > safeTop + 50) {
+    gamePtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    if (gamePtrs.size >= 2) {
+      if (!pinch) {
+        if (tapUndo && performance.now() - tapUndo.t < 700) { if (planJob) { planJob.cancel = true; planJob = null; } taps = tapUndo.taps; plan = tapUndo.plan; selPlanet = tapUndo.sel; }
+        pinchStart();
+      }
+      return;
+    }
   }
   if (state !== 'play') { // fin de partie : seulement les deux boutons de la question, une fois affichée
     if (stateT < END_DELAY) return;
@@ -920,6 +958,7 @@ cv.addEventListener('pointerdown', e => {
     if (ii >= 0) { tip = tip && tip.i === ii ? null : { i: ii, until: performance.now() + 4000 }; return; }
   }
   tip = null;
+  tapUndo = { t: performance.now(), taps: taps.slice(), plan, sel: selPlanet };
   if (!departed && taps.length) {
     // simulation affichée : « Valider » lance le pilote auto ; tout autre appui annule la simulation (sans décoller)
     if (canValidate() && Math.hypot(e.clientX - ctrl.x, e.clientY - ctrl.y) <= validBtn().w / 2) { auto = { P: plan.P, pts: taps.slice(), i: 0 }; simFlight = true; validT = performance.now(); depart(); }
@@ -929,7 +968,7 @@ cv.addEventListener('pointerdown', e => {
   }
   const inGame = e.clientY < bandTop && e.clientY > safeTop + 50;
   if (!departed) {
-    if (inBox(e, helpBtn())) { showHelp = !showHelp; if (showHelp) runHelp(); return; }
+    if (inBox(e, helpBtn())) { toggleHelp(); return; }
     if (inGame) {
       const pi = planetAt(e.clientX, e.clientY); // un astre touché : sa gravité et son orbite (un seul à la fois)
       if (pi >= 0) { selPlanet = selPlanet === pi ? -1 : pi; return; }
@@ -948,8 +987,16 @@ cv.addEventListener('pointerdown', e => {
     try { cv.setPointerCapture(e.pointerId); } catch (err) {}
   }
 }, { passive: false });
-cv.addEventListener('pointermove', e => { if (screen === 'editor') { editorPointerMove(e); return; } const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; } });
-const release = e => { if (screen === 'editor') { editorPointerUp(e); return; } touches.delete(e.pointerId); };
+cv.addEventListener('pointermove', e => {
+  if (screen === 'editor') { editorPointerMove(e); return; }
+  const g = gamePtrs.get(e.pointerId); if (g) { g.x = e.clientX; g.y = e.clientY; if (pinch && gamePtrs.size >= 2 && !departed) pinchMove(); }
+  const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; }
+});
+const release = e => {
+  if (screen === 'editor') { editorPointerUp(e); return; }
+  touches.delete(e.pointerId);
+  if (gamePtrs.delete(e.pointerId) && pinch && gamePtrs.size < 2) { pinch = null; clearTimeout(release.t); release.t = setTimeout(buildTextures, 150); } // textures nettes au nouveau zoom
+};
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
 cv.addEventListener('contextmenu', e => e.preventDefault());
@@ -972,7 +1019,7 @@ addEventListener('keydown', e => {
     if (state === 'play' && canValidate()) { auto = { P: plan.P, pts: taps.slice(), i: 0 }; simFlight = true; depart(); } // valider la trajectoire
     else if (state === 'won' && stateT > END_DELAY) endAction(1);
     else if (state === 'lost' && stateT > END_DELAY) endAction(0);
-  } else if ((k === 'h' || k === '?') && !departed && state === 'play') { showHelp = !showHelp; if (showHelp) runHelp(); } // aide
+  } else if ((k === 'h' || k === '?') && !departed && state === 'play') toggleHelp(); // aide (débloquée après 5 échecs)
 });
 addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
 addEventListener('blur', () => keys.clear());
@@ -1274,7 +1321,9 @@ function drawPath(path, dash) {
 // trajectoire sans poussée : pointillés, point blanc si on se pose, croix rouge si crash
 // croix masquée juste après le décollage (la trajectoire retombe encore sur l'astre de départ) ;
 // elle revient dès que la trajectoire touche un autre astre, ou qu'elle s'est d'abord libérée de tout contact
-let crossOff = -1; // astre de départ tant que la croix est masquée, -1 sinon
+let crossOff = -1, departT = 0;
+// visibilité des numéros d'objectifs : affichés pour préparer la mission, effacés en fondu au décollage
+const badgeAlpha = () => !departed ? 1 : Math.max(0, 1 - (performance.now() - departT) / 600); // astre de départ tant que la croix est masquée, -1 sinon
 function drawCoast(pr, live) {
   if (pr.hit && pr.hit.t < 0.1) return;
   ctx.strokeStyle = 'rgba(255,255,255,0.55)'; drawPath(pr.path, [2, 6]);
@@ -1355,8 +1404,16 @@ function drawLevels() {
   ctx.font = `400 28px ${FONT}`; ctx.textAlign = 'left'; ctx.fillText('\u2039', 14, safeTop + 26);
   ctx.font = `600 15px ${FONT}`; ctx.fillText('Accueil', 32, safeTop + 28);
   ctx.font = `700 22px ${FONT}`; ctx.textAlign = 'center'; ctx.fillText('Niveaux', W / 2, safeTop + 28);
-  levelTiles().forEach((b, i) => {
-    const md = medals[i] || [false, false, false];
+  if (pageCount() > 1) pageTabs().forEach(b => {
+    const on = b.k === levelPage, a = b.k * PER_PAGE, z = Math.min(LV.length, a + PER_PAGE);
+    const got = Array.from({ length: z - a }, (_, j) => starsOf(a + j)).reduce((x, y) => x + y, 0);
+    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, b.h / 2);
+    if (on) { ctx.fillStyle = '#fff'; ctx.fill(); } else { ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.fillStyle = on ? '#000' : '#fff'; ctx.font = `600 13px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(`${a + 1}–${z} · ★ ${got}`, b.x + b.w / 2, b.y + b.h / 2 + 1);
+  });
+  levelTiles().forEach(b => {
+    const i = b.i, md = medals[i] || [false, false, false];
     ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.fillStyle = i === lvl ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.05)'; ctx.fill();
     ctx.strokeStyle = i === lvl ? '#fff' : 'rgba(255,255,255,0.35)'; ctx.lineWidth = i === lvl ? 2 : 1; ctx.stroke();
@@ -1380,7 +1437,29 @@ function updateCam() {
     if (a < 1) { const e = a < 0.15 ? 0 : (a - 0.15) / 0.85, k = e * e * (3 - 2 * e); camY = camTarget() * k; } // un temps en haut, puis descente douce
     else camY += (camTarget() - camY) * Math.min(1, dt * 4);
   }
-  oy = baseOy - camY * scale;
+  // zoom / déplacement à deux doigts (avant le lancement seulement) ; au décollage, la vue revient doucement à la normale
+  if (departed && (view.z !== 1 || view.px || view.py)) {
+    const k = Math.min(1, dt * 5);
+    view.z += (1 - view.z) * k; view.px -= view.px * k; view.py -= view.py * k;
+    if (Math.abs(view.z - 1) < 0.002 && Math.abs(view.px) < 0.5 && Math.abs(view.py) < 0.5) { view.z = 1; view.px = view.py = 0; buildTextures(); }
+  }
+  scale = baseScale * view.z; ox = baseOx * view.z + view.px; oy = (baseOy - camY * baseScale) * view.z + view.py;
+}
+
+// vue avant le lancement : zoom (1 à 4) et déplacement à deux doigts
+let view = { z: 1, px: 0, py: 0 }, pinch = null, tapUndo = null;
+const gamePtrs = new Map();
+function pinchStart() {
+  const [a, b] = [...gamePtrs.values()], mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, wx: (mx - ox) / scale, wy: (my - oy) / scale, z: view.z };
+}
+function pinchMove() {
+  const [a, b] = [...gamePtrs.values()], mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const z = Math.max(1, Math.min(4, pinch.z * (Math.hypot(a.x - b.x, a.y - b.y) || 1) / pinch.d));
+  view.z = z; // le point du monde pris entre les doigts reste sous les doigts
+  view.px = mx - baseOx * z - pinch.wx * baseScale * z;
+  view.py = my - (baseOy - camY * baseScale) * z - pinch.wy * baseScale * z;
+  const lim = W * z; view.px = Math.max(-lim, Math.min(lim, view.px)); view.py = Math.max(-H * z, Math.min(H * z, view.py));
 }
 
 function draw() {
@@ -1429,7 +1508,7 @@ function draw() {
       ctx.fillStyle = '#fff'; ctx.font = `600 ${16 / scale}px ${FONT}`;
       ctx.fillText(Math.ceil(ZONE_TIME - mission.zoneT) + ' s', st.x, st.y);
     } else {
-      ctx.font = `600 ${14 / scale}px ${FONT}`; ctx.fillStyle = ctx.strokeStyle;
+      ctx.font = `600 ${14 / scale}px ${FONT}`; ctx.fillStyle = `rgba(255,255,255,${(cur ? 0.9 : 0.4) * zoneA * badgeAlpha()})`;
       ctx.fillText(String(i + 1), st.x, st.y);
     }
   });
@@ -1437,6 +1516,22 @@ function draw() {
   drawBelts(B, t);
   B.forEach(b => drawBody(B, b));
   drawShadows(B);
+  // numéros des objectifs « se poser » et « faire le tour » sur les astres concernés (avant le lancement)
+  const ba = badgeAlpha();
+  if (ba > 0 && state === 'play') {
+    const per = {};
+    L.steps.forEach((st, i) => { if (i >= mission.step && st.type !== 'zone') (per[st.p] = per[st.p] || []).push(st.type === 'orbit' ? `${i + 1}↻` : String(i + 1)); });
+    for (const [pi, labels] of Object.entries(per)) {
+      const b = B[pi]; if (!b) continue;
+      const txt = labels.join(' · '), fs = 13 / scale;
+      ctx.font = `700 ${fs}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      const w = Math.max(24 / scale, ctx.measureText(txt).width + 14 / scale), h = 24 / scale;
+      ctx.globalAlpha = ba;
+      ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.beginPath(); ctx.roundRect(b.x - w / 2, b.y - h / 2, w, h, h / 2); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.fillText(txt, b.x, b.y + 0.5 / scale);
+      ctx.globalAlpha = 1;
+    }
+  }
 
   // trajectoire de l'aide (solution conseillée)
   if (showHelp && !departed && helpRes && !helpRes.fail) { ctx.strokeStyle = 'rgba(255,255,255,0.8)'; drawPath(helpRes.path, [2, 5]); }
@@ -1670,11 +1765,13 @@ function draw() {
   ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 18); ctx.stroke();
   ctx.font = `600 14px ${FONT}`; ctx.textAlign = 'center'; ctx.fillText('Recommencer', b.x + b.w / 2, b.y + b.h / 2 + 1);
   if (!departed && state === 'play') {
-    b = helpBtn(); const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    b = helpBtn(); const cx = b.x + b.w / 2, cy = b.y + b.h / 2, open = helpOpen();
+    ctx.globalAlpha = open ? 1 : 0.35; // verrouillée : grisée tant qu'on n'a pas échoué 5 fois
     ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2);
     if (showHelp) { ctx.fill(); ctx.fillStyle = '#000'; } else ctx.stroke();
     ctx.font = `700 14px ${FONT}`; ctx.fillText('?', cx, cy + 1);
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = '#fff'; ctx.globalAlpha = 1;
+    if (!open && performance.now() - helpTipT < 2500) { const n = HELP_TRIES - failsOf(); label(`Solution après ${HELP_TRIES} tentatives (encore ${n})`, W / 2, bandTop - 80); ctx.fillStyle = '#fff'; }
   }
 
   // mission complète : étapes faites cochées, étape en cours en blanc (ombre portée pour rester lisible sur les astres)
