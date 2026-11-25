@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 77; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 80; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -654,6 +654,8 @@ function cancelJobs() {
 let nameT = -1e9, nameKey = '', recMode = null, testRec = null, testRuns = null; // recMode : enregistrement du vol du joueur (éditeur) // nom du niveau affiché en fondu à l'entrée
 function loadLevel(i, obj) {
   cancelJobs();
+  shipPixelsOf(shipKind); // pixels du vaisseau préparés dès le chargement : rien à calculer au moment du choc
+  if (hudCv.width !== cv.width || hudCv.height !== cv.height) { hudCv.width = cv.width; hudCv.height = cv.height; hudCv.getContext('2d').clearRect(0, 0, 1, 1); } // calque du fondu de fin prêt d'avance
   { const key = (obj ? 'p' : 'o') + i + ':' + ((obj || LV[i] || {}).name || ''); if (key !== nameKey || screen !== 'game') nameT = sweepT = performance.now(); nameKey = key; }
   lvl = i; L = obj || LV[i]; invalidate(L);
   if (!obj) levelPage = Math.floor(i / PER_PAGE);
@@ -663,7 +665,7 @@ function loadLevel(i, obj) {
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; flashes = []; particles = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
+  fuel = L.fuel; flashes = []; particles = []; wrecks = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
   auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {};
@@ -940,7 +942,6 @@ async function checkUpdate() {
     const nw = reg.installing || reg.waiting;
     if (!nw) { updState = 'Tu as la dernière version'; return; }
     updState = 'Installation de la mise à jour…';
-    navigator.serviceWorker.addEventListener('controllerchange', () => location.reload());
     nw.addEventListener('statechange', () => { if (nw.state === 'activated') location.reload(); });
     nw.postMessage('skipWaiting');
   } catch (e) { updState = 'Vérification impossible (hors ligne ?)'; }
@@ -1337,47 +1338,67 @@ const shipPixels = {};
 function shipPixelsOf(kind) {
   if (shipPixels[kind]) return shipPixels[kind];
   const S = 2, CW = 80, CH = 100, c = document.createElement('canvas'); c.width = CW; c.height = CH;
-  const main = ctx; ctx = c.getContext('2d');
+  const main = ctx; ctx = c.getContext('2d', { willReadFrequently: true });
   drawShip(kind, CW / 2, CH / 2, -Math.PI / 2, S, false, false);
   const im = ctx.getImageData(0, 0, CW, CH).data; ctx = main;
   const out = [];
   for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) { // un pixel tous les demi-points de dessin : le vaisseau entier
     const k = (y * CW + x) * 4;
-    if (im[k + 3] > 90) out.push([(x - CW / 2) / S, (y - CH / 2) / S, `${im[k]},${im[k + 1]},${im[k + 2]}`]);
+    if (im[k + 3] > 90) out.push([(x - CW / 2) / S, (y - CH / 2) / S, `${im[k]},${im[k + 1]},${im[k + 2]}`, -1, x, y, im[k], im[k + 1], im[k + 2]]);
   }
+  // pièces du vaisseau (coiffe, fuselage, hublot, ailerons…) : zones voisines de couleur proche ; c'est le long de ces jointures que l'épave se brise
+  const at = new Map(out.map((p, i) => [p[4] * 1000 + p[5], i]));
+  let parts = 0;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i][3] >= 0) continue;
+    const st = [i]; out[i][3] = parts;
+    while (st.length) {
+      const a = out[st.pop()];
+      for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const j = at.get((a[4] + ox) * 1000 + a[5] + oy); if (j === undefined || out[j][3] >= 0) continue;
+        const b = out[j]; if (Math.abs(a[6] - b[6]) + Math.abs(a[7] - b[7]) + Math.abs(a[8] - b[8]) > 70) continue;
+        b[3] = parts; st.push(j);
+      }
+    }
+    parts++;
+  }
+  // les miettes (bords adoucis, petits traits) rejoignent la pièce voisine la plus grande
+  const size = new Array(parts).fill(0); for (const p of out) size[p[3]]++;
+  for (let pass = 0; pass < 3; pass++) for (const p of out) {
+    if (size[p[3]] >= 12) continue;
+    let best = -1;
+    for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) { const j = at.get((p[4] + ox) * 1000 + p[5] + oy); if (j !== undefined && (best < 0 || size[out[j][3]] > size[best])) best = out[j][3]; }
+    if (best >= 0 && size[best] > size[p[3]]) { size[p[3]]--; p[3] = best; size[best]++; }
+  }
+  out.at = at;
   return (shipPixels[kind] = out);
 }
-// explosion : le vaisseau se désagrège pixel par pixel, en partant du point d'impact ; les pixels gardent leur couleur,
+// explosion : seule la partie du vaisseau qui a touché l'astre se désagrège pixel par pixel, en partant du point d'impact ;
+// le reste (souvent la tête) part d'un bloc en tournoyant (épave, wrecks) jusqu'à son propre choc. Les pixels gardent leur couleur,
 // subissent la gravité et s'écrasent sur les astres (comme les débris d'anneaux) ; dans une étoile, ils prennent sa couleur et s'évanouissent
-function boom(pi = -1, why = '') {
-  let P = pi >= 0 ? L.planets[pi] : null, star = why === 'star' && P, body = pi >= 0 ? bodyColor(pi) : null, bd = pi >= 0 ? B[pi] : null;
-  if (why === 'belt') { // ceinture : le choc se fait sur le caillou le plus proche, traité comme un petit astre
-    const rk = beltRockAt(ship.x, ship.y, 40);
-    P = null; bd = rk ? { x: rk.x, y: rk.y, r: rk.r, vx: rk.vx, vy: rk.vy } : null; body = rk ? rgbOf(rk.c) : '141,128,112';
-  }
-  const unit = Math.max(1, 1.15 / scale), sz = Math.max(0.45, unit * scale * 0.4);
-  let nx = 0, ny = 0, bvx = 0, bvy = 0, ix = ship.x, iy = ship.y;
-  if (bd) { const d = hyp(ship.x - bd.x, ship.y - bd.y) || 1; nx = (ship.x - bd.x) / d; ny = (ship.y - bd.y) / d; bvx = bd.vx; bvy = bd.vy; ix = bd.x + nx * bd.r; iy = bd.y + ny * bd.r; }
-  const rvx = ship.vx - bvx, rvy = ship.vy - bvy, rvn = rvx * nx + rvy * ny, tvx = rvx - rvn * nx, tvy = rvy - rvn * ny, sp = hyp(rvx, rvy);
-  for (const [dx, dy, col] of shipPixelsOf(shipKind)) {
-    const o = shipPoint(dx, dy);
-    let x = o.x, y = o.y;
+let wrecks = [];
+function shatter(pts, bd, star, body, sz, ix, iy, nx, ny, dustN) {
+  const bvx = bd ? bd.vx : 0, bvy = bd ? bd.vy : 0;
+  let sp = 0; for (const q of pts) sp += hyp(q.vx - bvx, q.vy - bvy); sp /= Math.max(1, pts.length);
+  for (const q of pts) {
+    const rvx = q.vx - bvx, rvy = q.vy - bvy, rvn = rvx * nx + rvy * ny, tvx = rvx - rvn * nx, tvy = rvy - rvn * ny;
+    let x = q.x, y = q.y;
     if (bd) { const ddx = x - bd.x, ddy = y - bd.y, dd = hyp(ddx, ddy) || 1; if (dd < bd.r + 0.5) { x = bd.x + ddx / dd * (bd.r + 0.5); y = bd.y + ddy / dd * (bd.r + 0.5); } }
     const dist = hyp(x - ix, y - iy), wait = Math.min(0.4, dist / (40 + sp * 0.8)); // l'onde de choc part du point d'impact
     // écrasement : le choc écrase l'épave contre l'astre (léger rebond) et les morceaux glissent surtout le long de la surface
-    const a = Math.random() * Math.PI * 2, j = 4 + Math.random() * 14, out = bd ? 3 + Math.random() * (6 + sp * 0.08) : 0, keep = 0.65 + Math.random() * 0.4; // l'élan est gardé : à grande vitesse, l'épave file le long de l'astre, voire le dépasse
+    const a = Math.random() * Math.PI * 2, j = 4 + Math.random() * 14, keep = 0.65 + Math.random() * 0.4; // l'élan est gardé : à grande vitesse, l'épave file le long de l'astre, voire le dépasse
     let jx = Math.cos(a) * j, jy = Math.sin(a) * j; const jn = jx * nx + jy * ny; if (jn > 0) { jx -= 1.7 * jn * nx; jy -= 1.7 * jn * ny; } // éclats plaqués vers l'astre
     let vx = bvx + tvx * keep + jx + rvn * nx * 0.15, vy = bvy + tvy * keep + jy + rvn * ny * 0.15;
     if (wait < 0.08 && Math.random() < 0.3) { const up = 12 + Math.random() * (18 + sp * 0.12); vx += nx * up; vy += ny * up; } // près de l'impact, quelques éclats remontent (léger rebond)
-    if (!bd) { vx = ship.vx * 0.6 + Math.cos(a) * (20 + Math.random() * 60); vy = ship.vy * 0.6 + Math.sin(a) * (20 + Math.random() * 60); }
-    if (star) particles.push({ x, y, vx: vx * 0.5, vy: vy * 0.5, wait, life: 0.8 + Math.random() * 1.4, max: 2.2, rgb: Math.random() < 0.5 ? body : col, sz });
-    else particles.push({ x, y, vx, vy, wait, life: Infinity, max: 1, rgb: col, sz, grav: true, slide: true }); // l'épave reste jusqu'à la partie suivante
+    if (!bd) { vx = q.vx * 0.6 + Math.cos(a) * (20 + Math.random() * 60); vy = q.vy * 0.6 + Math.sin(a) * (20 + Math.random() * 60); }
+    if (star) particles.push({ x, y, vx: vx * 0.5, vy: vy * 0.5, wait, life: 0.8 + Math.random() * 1.4, max: 2.2, rgb: Math.random() < 0.5 ? body : q.col, sz });
+    else particles.push({ x, y, vx, vy, wait, life: Infinity, max: 1, rgb: q.col, sz, grav: true, slide: true }); // l'épave reste jusqu'à la partie suivante
   }
-  // un peu de matière de l'astre soulevée à l'impact
-  // poussière de l'astre : elle jaillit de la surface autour du point d'impact, puis retombe (environ 4 fois moins de pixels que le vaisseau)
+  // poussière de l'astre : elle jaillit de la surface autour du point d'impact, puis retombe (bien moins de pixels que le vaisseau)
   if (bd && !star) {
-    const base = Math.atan2(ny, nx), span = Math.min(0.5, 22 / bd.r), n = 110;
-    for (let i = 0; i < n; i++) {
+    const base = Math.atan2(ny, nx), span = Math.min(0.5, 22 / bd.r), tvx0 = pts.length ? pts[0].vx - bvx : 0, tvy0 = pts.length ? pts[0].vy - bvy : 0;
+    const tn = tvx0 * nx + tvy0 * ny, tvx = tvx0 - tn * nx, tvy = tvy0 - tn * ny;
+    for (let i = 0; i < dustN; i++) {
       const pa = base + (Math.random() - 0.5) * 2 * span, px = bd.x + Math.cos(pa) * (bd.r + 0.6), py = bd.y + Math.sin(pa) * (bd.r + 0.6);
       const a = pa + (Math.random() - 0.5) * 1.1, v = 10 + Math.random() * (20 + sp * 0.35), d = hyp(px - ix, py - iy);
       particles.push({ x: px, y: py, vx: bvx + Math.cos(a) * v + tvx * 0.2, vy: bvy + Math.sin(a) * v + tvy * 0.2, wait: Math.min(0.25, d / 120),
@@ -1385,7 +1406,80 @@ function boom(pi = -1, why = '') {
     }
   }
   flashes.push({ x: ix, y: iy, r: 26 + sp * 0.25, t0: performance.now(), rgb: star ? body : '255,255,255' }); // l'instant du contact
+}
+function boom(pi = -1, why = '') {
+  let star = why === 'star' && pi >= 0, body = pi >= 0 ? bodyColor(pi) : null, bd = pi >= 0 ? B[pi] : null;
+  if (why === 'belt') { // ceinture : le choc se fait sur le caillou le plus proche, traité comme un petit astre
+    const rk = beltRockAt(ship.x, ship.y, 40);
+    bd = rk ? { x: rk.x, y: rk.y, r: rk.r, vx: rk.vx, vy: rk.vy } : null; body = rk ? rgbOf(rk.c) : '141,128,112';
+  }
+  const unit = Math.max(1, 1.15 / scale), sz = Math.max(0.45, unit * scale * 0.4);
+  let nx = 0, ny = 0, ix = ship.x, iy = ship.y;
+  if (bd) { const d = hyp(ship.x - bd.x, ship.y - bd.y) || 1; nx = (ship.x - bd.x) / d; ny = (ship.y - bd.y) / d; ix = bd.x + nx * bd.r; iy = bd.y + ny * bd.r; }
+  const px = shipPixelsOf(shipKind), pts = px.map(([dx, dy, col]) => { const o = shipPoint(dx, dy); return { x: o.x, y: o.y, vx: ship.vx, vy: ship.vy, col }; });
+  let hit = pts, rest = [], sp = 0;
+  if (bd && !star) {
+    // profondeur détruite : depuis le point le plus enfoncé (l'avant, l'arrière ou le flanc : ce qui a touché), une part de la longueur
+    // du vaisseau qui grandit avec la vitesse du choc ; une pièce surtout touchée part entière en pixels (la cassure suit les jointures)
+    sp = hyp(ship.vx - bd.vx, ship.vy - bd.vy);
+    const hs = pts.map(q => hyp(q.x - bd.x, q.y - bd.y) - bd.r);
+    let lo = Infinity, hi = -Infinity; for (const [, dy] of px) { lo = Math.min(lo, dy); hi = Math.max(hi, dy); }
+    const cut = Math.min(...hs) + (hi - lo) * unit * (0.25 + sp / 330), np = Math.max(...px.map(p => p[3])) + 1;
+    const tot = new Array(np).fill(0), touched = new Array(np).fill(0);
+    px.forEach((p, i) => { tot[p[3]]++; if (hs[i] <= cut) touched[p[3]]++; });
+    const gone = px.map((p, i) => hs[i] <= cut || (tot[p[3]] < px.length * 0.25 && touched[p[3]] >= tot[p[3]] * 0.5)); // les grandes pièces (fuselage) cassent net
+    hit = []; pts.forEach((q, i) => (gone[i] ? hit : rest).push(i));
+    if (rest.length < pts.length * 0.15) { hit = pts; rest = []; } // presque tout touché : tout part en pixels
+    else {
+      // morceaux qui restent : d'un bloc pour un choc doux ; plus le choc est fort, plus des pièces se détachent les unes des autres
+      const loose = new Array(np).fill(false).map(() => Math.random() < Math.min(0.75, Math.max(0, (sp - 30) / 160)));
+      const root = new Map(rest.map(i => [i, i])), find = i => { while (root.get(i) !== i) { root.set(i, root.get(root.get(i))); i = root.get(i); } return i; };
+      for (const i of rest) for (const [ox, oy] of [[1, 0], [0, 1], [1, 1], [1, -1]]) {
+        const j = px.at.get((px[i][4] + ox) * 1000 + px[i][5] + oy); if (j === undefined || !root.has(j)) continue;
+        if (px[i][3] === px[j][3] || (!loose[px[i][3]] && !loose[px[j][3]])) root.set(find(i), find(j));
+      }
+      const groups = new Map(); for (const i of rest) { const r = find(i); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(i); }
+      const crumbs = []; rest = [];
+      for (const g of groups.values()) (g.length < 8 ? crumbs : rest).push(g); // miettes isolées : elles éclatent avec le reste
+      hit = hit.map(i => pts[i]).concat(crumbs.flat().map(i => pts[i]));
+      rest = rest.map(g => g.map(i => pts[i]));
+      if (!rest.length) hit = pts;
+    }
+  }
+  shatter(hit, bd, star, body, sz, ix, iy, nx, ny, Math.round(110 * hit.length / pts.length));
+  const scx = rest.flat().reduce((a, q) => a + q.x, 0) / Math.max(1, rest.flat().length), scy = rest.flat().reduce((a, q) => a + q.y, 0) / Math.max(1, rest.flat().length);
+  for (const part of rest) { // chaque morceau intact s'envole : il garde l'élan le long de la surface, est repoussé par le choc et tournoie
+    let cx = 0, cy = 0; for (const q of part) { cx += q.x; cy += q.y; } cx /= part.length; cy /= part.length;
+    const pix = part.map(q => [q.x - cx, q.y - cy, q.col]), rc = Math.max(...pix.map(p => hyp(p[0], p[1]))) + 1;
+    const rvx = ship.vx - bd.vx, rvy = ship.vy - bd.vy, rvn = rvx * nx + rvy * ny, tvx = rvx - rvn * nx, tvy = rvy - rvn * ny, vt = -tvx * ny + tvy * nx;
+    const lever = Math.max(2, (cx - ix) * nx + (cy - iy) * ny), kick = 10 + Math.abs(rvn) * (0.3 + Math.random() * 0.2);
+    // plusieurs morceaux : ils s'écartent un peu les uns des autres
+    const ex = cx - scx, ey = cy - scy, el = hyp(ex, ey) || 1, spread = rest.length > 1 ? 6 + sp * (0.05 + Math.random() * 0.08) : 0;
+    wrecks.push({ x: cx, y: cy, vx: bd.vx + tvx * 0.8 + nx * kick + ex / el * spread, vy: bd.vy + tvy * 0.8 + ny * kick + ey / el * spread, ang: 0,
+      w: vt / lever * (0.3 + Math.random() * 0.3) + (Math.random() - 0.5) * (1.6 + (rest.length > 1 ? 2 : 0)), pix, rc, sz });
+  }
   ship.dead = true;
+}
+// épave intacte : vol libre sous la gravité, en tournant ; au premier contact avec un astre ou un caillou, elle se désagrège à son tour
+function moveWrecks(fdt) {
+  if (!B || screen !== 'game') return;
+  for (const w of wrecks) {
+    const [ax, ay] = gravity(B, w.x, w.y); w.vx += ax * fdt; w.vy += ay * fdt; w.x += w.vx * fdt; w.y += w.vy * fdt; w.ang += w.w * fdt;
+    const c = Math.cos(w.ang), s = Math.sin(w.ang), rk = beltRockAt(w.x, w.y, w.rc);
+    let hb = null, hx = 0, hy = 0;
+    for (const b of rk ? [...B, rk] : B) {
+      if (hyp(w.x - b.x, w.y - b.y) > b.r + w.rc) continue;
+      for (const [lx, ly] of w.pix) { const x = w.x + lx * c - ly * s, y = w.y + lx * s + ly * c; if (hyp(x - b.x, y - b.y) < b.r) { hb = b; hx = x; hy = y; break; } }
+      if (hb) break;
+    }
+    if (!hb) continue;
+    const d = hyp(hx - hb.x, hy - hb.y) || 1, nx = (hx - hb.x) / d, ny = (hy - hb.y) / d;
+    const pts = w.pix.map(([lx, ly, col]) => { const rx = lx * c - ly * s, ry = lx * s + ly * c; return { x: w.x + rx, y: w.y + ry, vx: w.vx - w.w * ry, vy: w.vy + w.w * rx, col }; });
+    const star = !!hb.star, body = hb === rk ? rgbOf(rk.c) : bodyColor(hb.i);
+    shatter(pts, { x: hb.x, y: hb.y, r: hb.r, vx: hb.vx, vy: hb.vy }, star, body, w.sz, hb.x + nx * hb.r, hb.y + ny * hb.r, nx, ny, Math.round(110 * pts.length / shipPixelsOf(shipKind).length));
+    w.dead = true;
+  }
+  wrecks = wrecks.filter(w => !w.dead && w.x > -2000 && w.x < WORLD_W + 2000 && w.y > -2000 && w.y < worldH(L) + 2000);
 }
 
 // ===== Dessin =====
@@ -1649,11 +1743,19 @@ function draw() {
   predHit = pred && pred.hit && pred.hit.p != null ? pred.hit.p : -1;
   if (pred && !simFlight) drawCoast(pred, true);
 
+  // pixels opaques (épave, poussière posée) regroupés par couleur : un seul remplissage par couleur au lieu d'un par pixel
+  const opaque = new Map(), put = (fs, x, y, w) => { let a = opaque.get(fs); if (!a) opaque.set(fs, a = []); a.push(x, y, w); };
   for (const q of particles) {
-    ctx.fillStyle = `rgba(${q.rgb || '255,255,255'},${Math.max(0, Math.min(1, q.life / q.max))})`;
-    const qs = (q.sz || (q.rgb ? 2 : 1.2)) / scale; // poussière d'anneaux un peu plus grosse ; coups de redressement plus fins
+    const al = Math.max(0, Math.min(1, q.life / q.max)), qs = (q.sz || (q.rgb ? 2 : 1.2)) / scale; // poussière d'anneaux un peu plus grosse ; coups de redressement plus fins
+    if (al >= 1) { if (q.fsr !== q.rgb || !q.fs) { q.fsr = q.rgb; q.fs = `rgb(${q.rgb || '255,255,255'})`; } put(q.fs, q.x - qs, q.y - qs, qs * 2); continue; }
+    ctx.fillStyle = `rgba(${q.rgb || '255,255,255'},${al})`;
     ctx.fillRect(q.x - qs, q.y - qs, qs * 2, qs * 2);
   }
+  for (const w of wrecks) { // épave intacte qui tournoie
+    const c = Math.cos(w.ang), s = Math.sin(w.ang), qs = w.sz / scale;
+    for (const p of w.pix) { if (!p[3]) p[3] = `rgb(${p[2]})`; put(p[3], w.x + p[0] * c - p[1] * s - qs, w.y + p[0] * s + p[1] * c - qs, qs * 2); }
+  }
+  for (const [fs, a] of opaque) { ctx.fillStyle = fs; ctx.beginPath(); for (let i = 0; i < a.length; i += 3) ctx.rect(a[i], a[i + 1], a[i + 2], a[i + 2]); ctx.fill(); }
   flashes = flashes.filter(f => performance.now() - f.t0 < 260);
   for (const f of flashes) { // éclair d'impact : très bref, puis la simulation continue
     const a = 1 - (performance.now() - f.t0) / 260, g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (1 + (1 - a) * 0.6));
@@ -1956,6 +2058,7 @@ function loop(now) {
   if (n === 6) acc = 0;
   stateT += fdt;
   if ((screen === 'game') !== wakeWant) keepAwake(screen === 'game');
+  moveWrecks(fdt);
   for (const q of particles) {
     if (q.wait > 0) { q.wait -= fdt; continue; } // pixel encore accroché à l'épave : il part quand l'onde de choc l'atteint
     if (!q.grav && !q.rgb && B && screen === 'game') { // gaz du réacteur : il s'écrase sur l'astre et file le long de sa surface (décollage, atterrissage)
@@ -1998,7 +2101,20 @@ resize(); loadLevel(lvl);
 requestAnimationFrame(loop);
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  // mise à jour automatique : à chaque ouverture (et retour dans l'appli), on demande la dernière version au serveur ;
+  // si elle existe, elle s'installe et s'active aussitôt, puis la page se recharge (en partie ou dans l'éditeur : dès le retour à l'accueil ou à la liste des niveaux)
+  const hadSW = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadSW || reloading) return; reloading = true;
+    const go = () => (screen === 'home' || screen === 'levels') && !document.querySelector('.modal') ? location.reload() : setTimeout(go, 500); // jamais en pleine partie ni dans l'éditeur
+    go();
+  });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    const check = () => reg.update().catch(() => {});
+    check();
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  }).catch(() => {});
 }
 </script>
 <script src="editeur.js"></script>
