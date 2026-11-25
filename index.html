@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 71; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 72; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -640,13 +640,14 @@ function cancelJobs() {
   planJob = helpJob = null;
 }
 
-let nameT = -1e9, nameKey = '', recMode = null; // recMode : enregistrement du vol du joueur (éditeur) // nom du niveau affiché en fondu à l'entrée
+let nameT = -1e9, nameKey = '', recMode = null, testRec = null, testRuns = null; // recMode : enregistrement du vol du joueur (éditeur) // nom du niveau affiché en fondu à l'entrée
 function loadLevel(i, obj) {
   cancelJobs();
   { const key = (obj ? 'p' : 'o') + i + ':' + ((obj || LV[i] || {}).name || ''); if (key !== nameKey || screen !== 'game') nameT = sweepT = performance.now(); nameKey = key; }
   lvl = i; L = obj || LV[i]; invalidate(L);
   if (!obj) levelPage = Math.floor(i / PER_PAGE);
-  if (recMode) recMode.runs = [];
+  if (testMode && testRec) recMode = { runs: [], auto: testRec.auto }; // dans l'éditeur, chaque essai est enregistré
+  testRuns = null;
   if (!L.fuel) L.fuel = 5;
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
@@ -722,7 +723,7 @@ function win() {
   }
   result = { got, fuelPct, time: elapsed };
   state = 'won'; stateT = 0; touches.clear();
-  if (recMode) { const runs = recMode.runs; recMode = null; setTimeout(() => recordDone(runs), 900); }
+  if (recMode) { const runs = recMode.runs, auto = recMode.auto; recMode = null; if (auto) setTimeout(() => recordDone(runs), 900); else testRuns = runs; } // test normal : vol gardé pour « Analyser »
 }
 
 function depart() {
@@ -877,6 +878,8 @@ const backBtn = () => ({ x: 6, y: safeTop + 6, w: 110, h: 44 });
 const menuBtn = () => ({ x: 2, y: safeTop + 6, w: 34, h: 44 });
 // liste des niveaux par pages de 20 (onglets 1–20, 21–40…)
 const PER_PAGE = 20;
+// un niveau s'ouvre quand le précédent a au moins une étoile (ceux déjà réussis restent ouverts)
+const levelOpen = i => i === 0 || starsOf(i - 1) > 0 || starsOf(i) > 0;
 let levelPage = 0;
 const pageCount = () => Math.ceil(LV.length / PER_PAGE);
 function pageTabs() {
@@ -927,7 +930,7 @@ cv.addEventListener('pointerdown', e => {
     const tb = pageTabs().find(b => inBox(e, b));
     if (tb) { levelPage = tb.k; return; }
     const t = levelTiles().find(b => inBox(e, b));
-    if (t) { loadLevel(t.i); screen = 'game'; }
+    if (t && levelOpen(t.i)) { loadLevel(t.i); screen = 'game'; } // niveau verrouillé : il faut au moins une étoile au précédent
     return;
   }
   // avant le lancement : deux doigts dans la zone de jeu = zoom / déplacement (le premier appui est alors annulé)
@@ -1414,13 +1417,22 @@ function drawLevels() {
   });
   levelTiles().forEach(b => {
     const i = b.i, md = medals[i] || [false, false, false];
+    if (!levelOpen(i)) { // verrouillé : case grisée avec un cadenas
+      ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12); ctx.fillStyle = 'rgba(255,255,255,0.03)'; ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,0.12)'; ctx.lineWidth = 1; ctx.stroke();
+      const cx = b.x + b.w / 2, cy = b.y + b.h * 0.45, u = b.h * 0.1;
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = u * 0.5;
+      ctx.beginPath(); ctx.arc(cx, cy - u * 0.4, u * 1.1, Math.PI, 0); ctx.stroke(); ctx.fillRect(cx - u * 1.6, cy - u * 0.4, u * 3.2, u * 2.4);
+      ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = `600 11px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(LV[i].name || '', b.x + b.w / 2, b.y + b.h + 9, b.w + 6);
+      return;
+    }
     ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12);
     ctx.fillStyle = i === lvl ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.05)'; ctx.fill();
     ctx.strokeStyle = i === lvl ? '#fff' : 'rgba(255,255,255,0.35)'; ctx.lineWidth = i === lvl ? 2 : 1; ctx.stroke();
     ctx.fillStyle = '#fff'; ctx.font = `700 ${Math.round(b.h * 0.32)}px ${FONT}`; ctx.textAlign = 'center';
     ctx.fillText(String(i + 1), b.x + b.w / 2, b.y + b.h * 0.4);
     ctx.font = `${Math.round(b.h * 0.18)}px ${FONT}`;
-    md.forEach((ok, k) => { ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.3)'; ctx.fillText(ok ? '★' : '☆', b.x + b.w / 2 + (k - 1) * b.h * 0.2, b.y + b.h * 0.76); });
+    const nst = md.filter(Boolean).length; // étoiles gagnées remplies depuis la gauche, sans trou
+    for (let k = 0; k < 3; k++) { const ok = k < nst; ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.3)'; ctx.fillText(ok ? '★' : '☆', b.x + b.w / 2 + (k - 1) * b.h * 0.2, b.y + b.h * 0.76); }
     ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = `600 11px ${FONT}`; ctx.fillText(LV[i].name || '', b.x + b.w / 2, b.y + b.h + 9, b.w + 6);
   });
 }
@@ -1795,7 +1807,11 @@ function draw() {
 
 // question de fin, dans la zone de commande, 3 s après le crash ou l'atterrissage réussi
 const hudCv = document.createElement('canvas'), END_DELAY = 3;
-const endBtns = () => { const y = H - Math.max(safeBot, 10) - 58, w = Math.min(150, (W - 44) / 2); return [{ x: W / 2 - w - 6, y, w, h: 46 }, { x: W / 2 + 6, y, w, h: 46 }]; };
+const endBtns = () => {
+  const y = H - Math.max(safeBot, 10) - 58;
+  if (testMode && state === 'won' && testRuns) { const w = Math.min(112, (W - 48) / 3); return [-1, 0, 1].map(k => ({ x: W / 2 - w / 2 + k * (w + 8), y, w, h: 46 })); } // éditeur : Rejouer · Éditeur · Analyser
+  const w = Math.min(150, (W - 44) / 2); return [{ x: W / 2 - w - 6, y, w, h: 46 }, { x: W / 2 + 6, y, w, h: 46 }];
+};
 function drawEndPanel() {
   if (state === 'play' || stateT < END_DELAY) return;
   const a = Math.min(1, (stateT - END_DELAY) / 0.5), top = bandTop - 10;
@@ -1807,7 +1823,8 @@ function drawEndPanel() {
   if (state === 'won') {
     ctx.font = `700 22px ${FONT}`; ctx.fillText('Mission accomplie !', W / 2, ty);
     ctx.font = `500 22px ${FONT}`;
-    result.got.forEach((ok, k) => { ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.35)'; ctx.fillText(ok ? '★' : '☆', W / 2 + (k - 1) * 30, ty + 32); });
+    const nst = result.got.filter(Boolean).length;
+    for (let k = 0; k < 3; k++) { const ok = k < nst; ctx.fillStyle = ok ? '#ffd60a' : 'rgba(255,255,255,0.35)'; ctx.fillText(ok ? '★' : '☆', W / 2 + (k - 1) * 30, ty + 32); }
     ctx.font = `400 13px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.7)';
     ctx.fillText(`Gaz restant ${Math.round(result.fuelPct)} % · ${fmt(result.time)} s (objectif ${L.time} s)`, W / 2, ty + 60);
   } else {
@@ -1815,11 +1832,13 @@ function drawEndPanel() {
     if (sub) { ctx.font = `400 14px ${FONT}`; ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fillText(sub, W / 2, ty + 44, W - 30); }
   }
   const next = testMode ? 'Éditeur' : playCtx ? 'Mes niveaux' : state === 'won' ? (lvl + 1 < LV.length ? 'Suivant' : 'Niveaux') : 'Niveaux';
-  button(b1, 'Rejouer', state !== 'won'); button(b2, next, state === 'won');
+  button(b1, 'Rejouer', state !== 'won'); button(b2, next, state === 'won' && !testRuns);
+  const b3 = endBtns()[2]; if (b3) button(b3, 'Analyser', true);
   ctx.restore();
 }
-function endAction(which) { // 0 : rejouer ; 1 : suite
+function endAction(which) { // 0 : rejouer ; 1 : suite ; 2 : analyser le vol réussi (éditeur)
   if (which === 0) { loadLevel(lvl, testMode || playCtx ? L : undefined); return; }
+  if (which === 2 && testRuns) { const r = testRuns; testRuns = null; recordDone(r); return; }
   cancelJobs();
   if (testMode) backToEditor(); else if (playCtx) openPerso();
   else if (state === 'won' && lvl + 1 < LV.length) loadLevel(lvl + 1);

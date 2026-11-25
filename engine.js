@@ -193,9 +193,9 @@ function orbitSteer(B, s, i, P) {
   return am < P.db * THRUST ? null : { x: ax / am, y: ay / am, p: Math.min(1, am / THRUST) };
 }
 
-// Pilote « humain agile » (niveaux avec human: true) : une décision toutes les 0,25 s (poussée tenue entre deux),
-// et après chaque atterrissage une vraie pause au sol (1 s + attente réglable « wait ») avant de repartir : pas de touché-décollé
-const HUMAN_HOLD = 15, HUMAN_REST = 1;
+// Pilote « humain agile » (niveaux avec human: true) : une décision toutes les 0,2 s (poussée tenue entre deux),
+// et après chaque atterrissage une vraie pause au sol (0,6 s + attente réglable « wait ») avant de repartir : pas de touché-décollé
+const HUMAN_HOLD = 12, HUMAN_REST = 0.6; // réglés d'après le vol d'un joueur expérimenté (niveau 23 : 19 % de gaz, 46 s)
 const pilotInit = () => ({ step: 0, hold: null, holdN: 0, restN: 0 });
 function pilot(L, B, s, m, P, ws, ps) {
   if (!L.human) return missionControl(L, B, s, m, P, ws);
@@ -452,8 +452,9 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
     }
     const bf = yield* climb(sols.reduce((a, b) => b.used < a.used ? b : a), 900 * f, (r, b) => r.used < b.used);
     const F = Math.ceil(bf.used * M * 10) / 10;
-    const half = sols.filter(s => s.used <= F / 2);
-    const bt = yield* climb(half.reduce((a, b) => b.t < a.t ? b : a), 900 * f, (r, b) => r.t < b.t, r => r.used <= F / 2);
+    // chrono : meilleur temps en gardant 50 % de gaz ; ou (margins.timeAny) meilleur temps tout court, sans dépasser le réservoir
+    const lim = margins.timeAny ? F : F / 2, half = sols.filter(s => s.used <= lim);
+    const bt = yield* climb(half.reduce((a, b) => b.t < a.t ? b : a), 900 * f, (r, b) => r.t < b.t, r => r.used <= lim);
     const T = Math.max(1, Math.ceil(bt.t * TAU));
     L.fuel = F; L.time = T;
     const bh = yield* climb(sols.filter(s => s.used <= F).reduce((a, b) => ratioCost(L, b) < ratioCost(L, a) ? b : a), 700 * f, (r, b) => ratioCost(L, r) < ratioCost(L, b), r => r.used <= F);

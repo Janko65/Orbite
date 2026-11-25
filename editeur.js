@@ -136,7 +136,7 @@ function closeEditor() {
 
 // retour depuis un test
 function backToEditor() {
-  testMode = false; recMode = null; cancelJobs();
+  testMode = false; recMode = null; testRec = null; testRuns = null; cancelJobs();
   screen = 'editor';
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = '';
   selectLevel(ED.cur);
@@ -492,8 +492,8 @@ function testLevel(record) {
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = 'none';
   testMode = true; screen = 'game';
   resize(); // mise en page du jeu (et non celle de l'éditeur) avant de lancer le niveau
+  testRec = { auto: record === true }; // chaque essai est enregistré ; en « gaz illimité », le vol réussi part directement au solveur
   if (record === true) { // gaz et chrono illimités ; le vol réussi servira de base au solveur
-    recMode = { runs: [] };
     const c = JSON.parse(JSON.stringify(Lv, (k, v) => k === '_B' ? undefined : v)); c.fuel = 9999; c.time = 9999; delete c.hint;
     loadLevel(ED.cur, c);
   } else loadLevel(ED.cur, Lv);
