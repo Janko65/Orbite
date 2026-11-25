@@ -193,6 +193,22 @@ function orbitSteer(B, s, i, P) {
   return am < P.db * THRUST ? null : { x: ax / am, y: ay / am, p: Math.min(1, am / THRUST) };
 }
 
+// Pilote « humain agile » (niveaux avec human: true) : une décision toutes les 0,25 s (poussée tenue entre deux),
+// et après chaque atterrissage une vraie pause au sol (1 s + attente réglable « wait ») avant de repartir : pas de touché-décollé
+const HUMAN_HOLD = 15, HUMAN_REST = 1;
+const pilotInit = () => ({ step: 0, hold: null, holdN: 0, restN: 0 });
+function pilot(L, B, s, m, P, ws, ps) {
+  if (!L.human) return missionControl(L, B, s, m, P, ws);
+  if (ps.step !== m.step) { // objectif atteint : après un atterrissage, on reste posé un moment
+    const prev = L.steps[ps.step];
+    if (m.step > ps.step && prev && prev.type === 'land') { const Q = (P.per && P.per[ps.step]) || P; ps.restN = Math.round((HUMAN_REST + (Q.wait || 0)) / DT); }
+    ps.holdN = 0; ps.step = m.step;
+  }
+  if (ps.restN > 0) { ps.restN--; return null; }
+  if (ps.holdN > 0) { ps.holdN--; return ps.hold; }
+  ps.hold = missionControl(L, B, s, m, P, ws); ps.holdN = HUMAN_HOLD - 1;
+  return ps.hold;
+}
 function missionControl(L, B, s, m, P0, ws) {
   const o = L.steps[m.step], P = P0.per && P0.per[m.step] ? P0.per[m.step] : P0; // réglages propres à chaque objectif (solveur par étapes)
   const wpsAll = P0.wps;
@@ -230,7 +246,7 @@ function stepCloseness(L, B, m, s) {
   return 0.5 / (1 + Math.max(0, d - influence(B, o.p).soi) / 200) + 0.45 * Math.min(1, Math.abs(m.orbA) / (2 * Math.PI * o.n));
 }
 function fly(L, P, pts, tmax) {
-  const s = startState(L), m = missionInit(), ws = { step: -1, i: 0 }, path = [[s.x, s.y]], steps = [0];
+  const s = startState(L), m = missionInit(), ws = { step: -1, i: 0 }, ps = pilotInit(), path = [[s.x, s.y]], steps = [0];
   const rec = P && P.rec ? decodeRec(P.rec) : null;
   let used = 0, t = 0, tw = 0, launched = false, frame = 0, pi = 0, best = 0, bStep = 0;
   tmax = rec ? rec.length * DT + 0.5 : tmax || (pts ? 40 : Math.max(150, 70 * L.steps.length)) * worldH(L) / WORLD_H;
@@ -244,7 +260,7 @@ function fly(L, P, pts, tmax) {
       // points de passage dans l'ordre : on traverse les premiers à vitesse de croisière, on s'arrête au dernier
       if (hyp(pts[pi][0] - s.x, pts[pi][1] - s.y) < 30 && ++pi >= pts.length) return res(true);
       th = steer(B0, s, pts[pi][0], pts[pi][1], pi < pts.length - 1 ? P.vmax : 0, P);
-    } else th = missionControl(L, B0, s, m, P, ws);
+    } else th = pilot(L, B0, s, m, P, ws, ps);
     if (th && !L.noShadow && inShadow(B0, s.x, s.y)) th = null;
     if (th) launched = true;
     if (rec) s.ang = rec[frame].ang; else turn(s, th, DT);
@@ -301,18 +317,18 @@ function randP(L, withWps, rnd = Math.random) {
     return w;
   });
   return { wps, vmax: R(30, 220), brake: R(10, 100), gain: R(0.3, 4), comp: R(0, 1), db: R(0, 0.4), land: R(5, 35),
-    orbR: R(0, 1), orbDir: rnd() < 0.5 ? -1 : 1, orbK: R(0.2, 1.5) };
+    orbR: R(0, 1), orbDir: rnd() < 0.5 ? -1 : 1, orbK: R(0.2, 1.5), wait: R(0, 6) };
 }
 function mutate(P, rnd = Math.random, k = 1, hgt = WORLD_H) {
   const m = (v, s, lo, hi) => Math.max(lo, Math.min(hi, v + (rnd() - 0.5) * s * k));
   const par = Q => ({ vmax: m(Q.vmax, 30, 20, 250), brake: m(Q.brake, 15, 5, 120), gain: m(Q.gain, 0.5, 0.2, 5),
     comp: m(Q.comp, 0.15, 0, 1), db: m(Q.db, 0.06, 0, 0.6), land: m(Q.land, 6, 3, 40),
-    orbR: m(Q.orbR, 0.15, 0, 1), orbDir: rnd() < 0.03 ? -Q.orbDir : Q.orbDir, orbK: m(Q.orbK, 0.2, 0.1, 2) });
+    orbR: m(Q.orbR, 0.15, 0, 1), orbDir: rnd() < 0.03 ? -Q.orbDir : Q.orbDir, orbK: m(Q.orbK, 0.2, 0.1, 2), wait: m(Q.wait || 0, 1.5, 0, 8) });
   const out = { wps: P.wps.map(w => w.map(([x, y]) => [m(x, 60, 30, WORLD_W - 30), m(y, 60, 30, hgt - 30)])), ...par(P) };
   if (P.per) out.per = P.per.map(par);
   return out;
 }
-const PARAM_KEYS = ['vmax', 'brake', 'gain', 'comp', 'db', 'land', 'orbR', 'orbDir', 'orbK'];
+const PARAM_KEYS = ['vmax', 'brake', 'gain', 'comp', 'db', 'land', 'orbR', 'orbDir', 'orbK', 'wait'];
 const paramsOf = P => Object.fromEntries(PARAM_KEYS.map(k => [k, P[k]]));
 
 // Solution la plus adaptée : meilleur compromis temps / gaz (rapportés au gaz disponible et au temps objectif)
@@ -326,13 +342,13 @@ const defaultMargins = (i, n) => ({ fuel: +(3.0 - 0.8 * i / Math.max(1, n - 1)).
 // Vol d'un seul objectif à partir d'un état enregistré (solveur par étapes) : mêmes calculs, dans le même ordre, que fly()
 // st = { s, m, tw, used, launched } ; s'arrête quand l'objectif m.step est rempli (ok), au crash, ou après tmax secondes
 function flyStage(L, P, st, tmax) {
-  const s = { ...st.s }, m = { ...st.m }, ws = { step: -1, i: 0 }, k0 = m.step;
+  const s = { ...st.s }, m = { ...st.m }, ws = { step: -1, i: 0 }, ps = { ...(st.ps || pilotInit()) }, k0 = m.step;
   let used = st.used, tw = st.tw, launched = st.launched, t = 0, frame = 0, best = 0;
   const h = DT / SUB;
-  const out = ok => ({ ok, prog: ok ? 1 : best, st: { s: { ...s }, m: { ...m }, tw, used, launched } });
+  const out = ok => ({ ok, prog: ok ? 1 : best, st: { s: { ...s }, m: { ...m }, ps: { ...ps }, tw, used, launched } });
   while (t < tmax) {
     const B0 = snapshot(L, tw);
-    let th = missionControl(L, B0, s, m, P, ws);
+    let th = pilot(L, B0, s, m, P, ws, ps);
     if (th && !L.noShadow && inShadow(B0, s.x, s.y)) th = null;
     if (th) launched = true;
     turn(s, th, DT);
@@ -460,6 +476,6 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
 }
 
 if (typeof module !== 'undefined') module.exports = {
-  WORLD_W, WORLD_H, worldH, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
+  WORLD_W, WORLD_H, worldH, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
   ratioCost, bodyMass, calibrate, defaultMargins, decodeRec,
 };
