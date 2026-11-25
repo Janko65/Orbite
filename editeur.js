@@ -29,13 +29,20 @@ const ED = { mode: 'perso', levels: [], cur: 0, sel: null, tab: 'astre', drag: n
   .ed button.pri{background:#fff;color:#000;border-color:#fff}
   .ed button.dan{color:#ff6b61;border-color:rgba(255,107,97,.5)}
   .ed select{flex:1;min-width:0}
-  .ed input[type=range]{flex:1;min-width:0;padding:0;accent-color:#fff;background:none;border:0}
+  .ed input[type=range]{flex:1;min-width:0;padding:0;accent-color:#fff;background:none;border:0;height:40px;-webkit-appearance:none;appearance:none}
+  .ed input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:rgba(255,255,255,.25)}
+  .ed input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;margin-top:-11px;border-radius:14px;background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.6)}
+  .ed input[type=range]::-moz-range-thumb{width:28px;height:28px;border-radius:14px;background:#fff;border:0}
   .ed input[type=text]{flex:1;min-width:0}
   .edTabs{display:flex;border-bottom:1px solid rgba(255,255,255,.15)}
   .edTabs button{flex:1;border:0;border-radius:0;background:none;color:rgba(255,255,255,.55);min-height:46px;padding:0 4px}
   .edTabs button.fold{flex:none;width:48px;color:#fff;font-size:18px}
   .row.wrap{flex-wrap:wrap}.row.wrap>button{flex:1 1 auto}
   .mapBtn{position:fixed;z-index:9;left:auto!important;right:10px;width:auto;min-height:40px!important;font-size:13px!important;background:rgba(20,20,24,.85)!important}
+  #edCenter{position:fixed;z-index:9;right:10px;left:auto;display:flex;flex-direction:column;gap:8px;background:none;border:0}
+  #edCenter button{width:56px;min-height:56px;padding:0;border-radius:28px;background:rgba(20,20,24,.88);font-size:11px;line-height:1.1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+  #edCenter button b{font-size:20px;font-weight:600}
+  #edCenter button.pri{background:#fff;color:#000}
   .edTabs button.on{color:#fff;box-shadow:inset 0 -2px 0 #fff}
   .edBody{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
   .row{display:flex;gap:8px;align-items:center}
@@ -129,7 +136,7 @@ function closeEditor() {
 
 // retour depuis un test
 function backToEditor() {
-  testMode = false; cancelJobs();
+  testMode = false; recMode = null; cancelJobs();
   screen = 'editor';
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = '';
   selectLevel(ED.cur);
@@ -145,7 +152,7 @@ const saveDraft = () => {
 function changed(retexture) {
   const Lv = EL();
   invalidate(Lv);
-  delete Lv.hint; delete Lv.stars; Lv.dirty = true;
+  delete Lv.hint; delete Lv.stars; Lv.dirty = true; if (ED.rec && ED.rec.level === Lv) ED.rec = null; // un vol enregistré ne vaut plus après une modification
   ED.hintCache = null;
   if (retexture) { clearTimeout(changed.t); changed.t = setTimeout(buildTextures, 120); }
   saveDraft();
@@ -170,12 +177,12 @@ function editorLayout() {
   const p = document.getElementById('edPanel');
   if (p) p.style.height = panelH + 'px';
   const c = document.getElementById('edCenter');
-  if (c) c.style.top = (ED.top + 8) + 'px';
+  if (c) c.style.top = Math.max(ED.top + 8, ED.mapBottom - 194) + 'px'; // colonne d'outils en bas à droite de la carte
   if (ED.view) { ({ scale, ox, oy } = ED.view); return; }
-  const area = ED.mapBottom - ED.top - 8;
-  scale = Math.min(W / WORLD_W, area / WORLD_H);
+  const area = ED.mapBottom - ED.top - 8, hh = ED.levels && ED.levels[ED.cur] ? worldH(EL()) : WORLD_H;
+  scale = Math.min(W / WORLD_W, area / hh);
   ox = (W - WORLD_W * scale) / 2;
-  oy = ED.top + 4 + (area - WORLD_H * scale) / 2;
+  oy = ED.top + 4 + (area - hh * scale) / 2;
 }
 const setView = (sc, x, y) => {
   ED.view = { scale: sc, ox: x, oy: y }; editorLayout();
@@ -193,7 +200,12 @@ function buildUI() {
   const panel = el('div', { id: 'edPanel', class: 'ed' },
     el('div', { class: 'edTabs', id: 'edTabs' }),
     el('div', { class: 'edBody', id: 'edBody' }));
-  const center = el('button', { id: 'edCenter', class: 'ed mapBtn', onclick: () => { ED.view = null; editorLayout(); buildTextures(); } }, 'Recentrer');
+  // outils toujours à portée de pouce, à droite de la carte
+  const tool = (ic, t, f, cls = '') => el('button', { class: cls, onclick: f }, el('b', {}, ic), t);
+  const center = el('div', { id: 'edCenter', class: 'ed' },
+    tool('⤢', 'Cadrer', () => { ED.view = null; editorLayout(); buildTextures(); }),
+    tool('🎲', 'Hasard', rerollLevel),
+    tool('▶', 'Tester', () => testLevel(), 'pri'));
   document.body.append(top, panel, center);
   editorLayout();
 }
@@ -233,17 +245,23 @@ function panelBody(body) {
     el('button', { onclick: () => addBody('planet') }, '+ Planète'),
     el('button', { onclick: () => addBody('moon') }, '+ Lune'),
     el('button', { onclick: () => addBody('star') }, '+ Étoile')));
-  if (sel < 0) { body.append(el('div', { class: 'hint' }, 'Touchez un astre pour le régler, faites-le glisser pour le déplacer (même hors de l’écran de jeu). Faites glisser la fusée pour choisir le départ. Un doigt dans le vide déplace la carte, deux doigts zooment ; ▾ replie ce panneau.')); return; }
+  if (sel < 0) { body.append(el('div', { class: 'hint' }, 'Toucher un astre : le régler. Le faire glisser : le déplacer. Appui long dans le vide : nouvelle planète. Glisser la fusée : changer le départ. Un doigt déplace la carte, deux doigts zooment.')); return; }
   const p = Lv.planets[sel];
   body.append(el('div', { class: 'row' }, el('label', {}, 'Type'),
-    el('select', { onchange: e => { p.type = e.target.value; if (p.type === 'soleil') { p.star = true; delete p.orbit; } else delete p.star; fixStart(Lv); changed(true); renderPanel(); } },
+    el('select', { onchange: e => { p.type = e.target.value; if (p.type === 'soleil') p.star = true; else delete p.star; fixStart(Lv); changed(true); renderPanel(); } },
       BODY_TYPES.map(t => el('option', { value: t, selected: t === p.type }, TYPE_LABEL[t])))));
   body.append(el('div', { class: 'row' }, el('label', {}, 'Nom'), el('input', { type: 'text', value: p.name || '', placeholder: bodyName({ type: p.type }), oninput: e => { if (e.target.value.trim()) p.name = e.target.value.trim(); else delete p.name; saveDraft(); } })));
-  body.append(slider('Taille', 20, 240, 1, p.r, v => `${v} m`, v => { p.r = v; if (p.orbit) placeMoon(Lv, sel); changed(true); }));
+  body.append(slider('Taille', 20, 240, 1, p.r, v => `${v} m`, v => { p.r = v; if (p.orbit) placeMoon(Lv, sel); placeTree(Lv, sel); changed(true); }));
   const gv = el('span');
   body.append(slider('Gravité', 0.2, 3, 0.05, p.g || 1, v => `× ${v.toFixed(2)}`, v => { p.g = +v.toFixed(2); if (p.g === 1) delete p.g; gv.textContent = gText(p); changed(false); }));
   gv.textContent = gText(p);
   body.append(el('div', { class: 'hint' }, gv));
+  if (p.star) {
+    // étoile : couleur (température) et intensité de la lumière émise
+    body.append(slider('Couleur', 0, 1, 0.05, p.temp ?? 0.5, v => starName({ temp: v }), v => { p.temp = +v.toFixed(2); changed(true); }));
+    body.append(slider('Intensité', 0.3, 2, 0.05, p.lum ?? 1, v => `× ${v.toFixed(2)}`, v => { p.lum = +v.toFixed(2); if (p.lum === 1) delete p.lum; changed(false); }));
+    body.append(el('div', { class: 'hint' }, 'De la géante rouge à la naine blanche. Plus une étoile est grosse et intense, plus ses ombres sont marquées ; les ombres prennent la couleur des autres étoiles.'));
+  }
   if (!p.star) {
     // apparence
     if (p.type === 'perso') {
@@ -256,10 +274,18 @@ function panelBody(body) {
         p.tint ? el('input', { type: 'color', value: p.tint, oninput: e => { p.tint = e.target.value; changed(true); } }) : el('span', { class: 'hint' }, 'couleurs d’origine')));
       if (p.tint) body.append(slider('Nuance', 0.1, 1, 0.05, p.shade ?? 0.6, v => `${Math.round(v * 100)} %`, v => { p.shade = +v.toFixed(2); changed(true); }));
     }
+    body.append(slider('Axe', -90, 90, 1, p.axis || 0, v => `${v}°`, v => { p.axis = v; if (!v) delete p.axis; changed(false); }));
+  }
+  { // anneaux décoratifs (étoiles comprises)
     body.append(el('div', { class: 'row' }, el('label', {}, 'Anneaux'),
       el('input', { type: 'checkbox', checked: hasRings(p), onchange: e => { if (e.target.checked) p.ring = p.type === 'saturne' && !p.ring ? true : (typeof p.ring === 'string' ? p.ring : '#d6c496'); else p.ring = false; if (p.ring === true) delete p.ring; changed(false); renderPanel(); } }),
-      hasRings(p) ? el('input', { type: 'color', value: ringColor(p), oninput: e => { p.ring = e.target.value; changed(false); } }) : null,
-      el('span', { class: 'hint' }, 'décoratifs : le vaisseau les traverse en soulevant de la poussière')));
+      el('span', { class: 'hint' }, 'décoratifs : le vaisseau les traverse et les brise')));
+    if (hasRings(p)) body.append(el('div', { class: 'row' }, el('label', {}, 'Forme'),
+      el('select', { onchange: e => { if (e.target.value === 'classique') delete p.ringForm; else p.ringForm = e.target.value; changed(false); } }, Object.entries(RING_FORMS).map(([k, f]) => el('option', { value: k, selected: k === (p.ringForm || 'classique') }, f.label)))));
+    if (hasRings(p)) body.append(el('div', { class: 'row' }, el('label', {}, 'Couleur'),
+      ...RING_COLORS.map(col => el('button', { title: col, style: `width:26px;height:26px;min-height:0;padding:0;border-radius:13px;background:${col};border:${ringColor(p) === col ? '2px solid #fff' : '1px solid rgba(255,255,255,.25)'}`, onclick: () => { p.ring = col; changed(false); renderPanel(); } })),
+      el('input', { type: 'color', value: ringColor(p), oninput: e => { p.ring = e.target.value; changed(false); } })));
+    if (hasRings(p)) body.append(slider('Rotation', -90, 90, 1, p.ringTilt ?? Math.round(ringForm({ ringForm: p.ringForm }).tilt * 180 / Math.PI), v => `${v}°`, v => { p.ringTilt = v; changed(false); }));
   }
   if (!p.orbit) {
     // ceinture d'astéroïdes infranchissable autour de cet astre
@@ -273,15 +299,27 @@ function panelBody(body) {
       body.append(slider('Largeur', 10, 160, 1, belt.w, v => `${v} m`, v => { belt.w = v; changed(false); }));
     }
   }
+  // n'importe quel astre peut tourner autour de n'importe quel autre (étoiles comprises), sauf le départ et sans boucle
+  const parents = Lv.planets.map((q, i) => i).filter(i => i !== sel && !isUnder(Lv, i, sel));
+  if (sel !== Lv.start.p && parents.length) body.append(el('div', { class: 'row' }, el('label', {}, 'En orbite'),
+    el('input', { type: 'checkbox', checked: !!p.orbit, onchange: e => {
+      if (e.target.checked) {
+        const par = parents.reduce((a, b) => hyp(Lv.planets[b].x - p.x, Lv.planets[b].y - p.y) < hyp(Lv.planets[a].x - p.x, Lv.planets[a].y - p.y) ? b : a), q = Lv.planets[par];
+        p.orbit = { p: par, d: Math.round(hyp(p.x - q.x, p.y - q.y)), a0: +Math.atan2(p.y - q.y, p.x - q.x).toFixed(4), dir: 1 };
+        if (Lv.belts) { Lv.belts = Lv.belts.filter(b => b.p !== sel); if (!Lv.belts.length) delete Lv.belts; }
+        placeMoon(Lv, sel); placeTree(Lv, sel);
+      } else delete p.orbit;
+      changed(false); renderPanel();
+    } }), el('span', { class: 'hint' }, 'tourne autour d’un autre astre')));
   if (p.orbit) {
     body.append(el('div', { class: 'row' }, el('label', {}, 'Tourne autour'),
-      el('select', { onchange: e => { p.orbit.p = +e.target.value; placeMoon(Lv, sel); changed(false); } }, bodyOptions(Lv, p.orbit.p, (q, i) => i !== sel && !q.orbit && !q.star))));
-    body.append(slider('Distance', Lv.planets[p.orbit.p].r + p.r + 15, 700, 1, Math.round(p.orbit.d), v => `${v} m`, v => { p.orbit.d = v; placeMoon(Lv, sel); changed(false); }));
+      el('select', { onchange: e => { p.orbit.p = +e.target.value; placeMoon(Lv, sel); placeTree(Lv, sel); changed(false); } }, bodyOptions(Lv, p.orbit.p, (q, i) => parents.includes(i)))));
+    body.append(slider('Distance', Lv.planets[p.orbit.p].r + p.r + 15, 700, 1, Math.round(p.orbit.d), v => `${v} m`, v => { p.orbit.d = v; placeMoon(Lv, sel); placeTree(Lv, sel); changed(false); }));
     body.append(el('div', { class: 'row' }, el('label', {}, 'Sens'),
       el('select', { onchange: e => { p.orbit.dir = +e.target.value; changed(false); } },
         el('option', { value: 1, selected: (p.orbit.dir || 1) === 1 }, 'Horaire'), el('option', { value: -1, selected: p.orbit.dir === -1 }, 'Anti-horaire'))));
     const q = Lv.planets[p.orbit.p], per = 2 * Math.PI * Math.sqrt(p.orbit.d ** 3 / bodyMass(q));
-    body.append(el('div', { class: 'hint' }, `Un tour en ${Math.round(per)} s (vitesse réelle d’orbite). Faites glisser la lune pour changer sa position de départ.`));
+    body.append(el('div', { class: 'hint' }, `Un tour en ${Math.round(per)} s (vitesse réelle d’orbite). Faites glisser l’astre pour changer sa position de départ.`));
   }
   body.append(el('div', { class: 'row' }, el('button', { class: 'dan', onclick: () => removeBody(sel) }, 'Supprimer cet astre')));
 }
@@ -293,7 +331,7 @@ function addBody(kind) {
   if (kind === 'star') p = { type: 'soleil', star: true, x: -60, y: -60, r: 160 };
   else if (kind === 'planet') p = { type: 'mars', x: 500, y: 750, r: 90 };
   else {
-    const par = ED.sel && ED.sel.kind === 'body' && !Lv.planets[ED.sel.i].orbit && !Lv.planets[ED.sel.i].star ? ED.sel.i : Lv.planets.findIndex(q => !q.orbit && !q.star);
+    const par = ED.sel && ED.sel.kind === 'body' ? ED.sel.i : Lv.planets.findIndex(q => !q.orbit && !q.star);
     if (par < 0) return;
     p = { type: 'lune', r: 35, x: 0, y: 0, orbit: { p: par, d: Lv.planets[par].r * 2 + 60, a0: 0, dir: 1 } };
   }
@@ -304,6 +342,16 @@ function addBody(kind) {
   changed(true); renderPanel();
 }
 
+// i est-il en orbite (directement ou non) autour de j ?
+function isUnder(Lv, i, j) {
+  for (let k = i, n = 0; Lv.planets[k] && Lv.planets[k].orbit && n < 20; n++) { k = Lv.planets[k].orbit.p; if (k === j) return true; }
+  return false;
+}
+// replace tout ce qui tourne (directement ou non) autour de l'astre i
+function placeTree(Lv, i, n = 0) {
+  if (n > 10) return;
+  Lv.planets.forEach((m, k) => { if (m.orbit && m.orbit.p === i && k !== i) { placeMoon(Lv, k); placeTree(Lv, k, n + 1); } });
+}
 // position de départ (x, y) d'une lune d'après son orbite
 function placeMoon(Lv, i) {
   const p = Lv.planets[i], q = Lv.planets[p.orbit.p];
@@ -315,7 +363,7 @@ function removeBody(i) {
   const Lv = EL();
   if (Lv.planets.filter(p => !p.star && !p.orbit).length <= 1 && !Lv.planets[i].star && !Lv.planets[i].orbit) { alertBox('Il faut garder au moins une planète fixe pour le départ.'); return; }
   const gone = new Set([i]);
-  Lv.planets.forEach((p, k) => { if (p.orbit && gone.has(p.orbit.p)) gone.add(k); });
+  for (let pass = 0; pass < 10; pass++) Lv.planets.forEach((p, k) => { if (p.orbit && gone.has(p.orbit.p)) gone.add(k); });
   const map = {}; let n = 0;
   Lv.planets.forEach((p, k) => { if (!gone.has(k)) map[k] = n++; });
   Lv.planets = Lv.planets.filter((p, k) => !gone.has(k));
@@ -367,6 +415,16 @@ function panelLevel(body) {
   body.append(el('div', { class: 'row' }, el('label', {}, 'Nom'), el('input', { type: 'text', value: Lv.name || '', oninput: e => { Lv.name = e.target.value; saveDraft(); refreshLevelSelect(); } })));
   body.append(el('div', { class: 'row' }, el('label', {}, 'Départ'),
     el('select', { onchange: e => { Lv.start.p = +e.target.value; changed(false); } }, bodyOptions(Lv, Lv.start.p, q => !q.star && !q.orbit))));
+  // grand voyage : carte deux fois plus haute, l'espace ajouté est au-dessus (tout le niveau descend de 2000 m)
+  body.append(el('div', { class: 'row' }, el('label', {}, 'Grand voyage'),
+    el('input', { type: 'checkbox', checked: worldH(Lv) > WORLD_H, onchange: e => {
+      const dy = e.target.checked ? WORLD_H : -WORLD_H;
+      if (e.target.checked) Lv.h = 2 * WORLD_H; else delete Lv.h;
+      Lv.planets.forEach(p => { p.y += dy; });
+      Lv.steps.forEach(s => { if (s.type === 'zone') s.y += dy; });
+      ED.view = null; editorLayout(); changed(false); renderPanel();
+    } }),
+    el('span', { class: 'hint' }, 'carte deux fois plus haute')));
   body.append(slider('Marge gaz', 2, 4, 0.05, mg.fuel, v => `× ${v.toFixed(2)}`, v => { Lv.margins = { ...(Lv.margins || dm), fuel: +v.toFixed(2) }; changed(false); }));
   body.append(slider('Marge chrono', 1.05, 2, 0.05, mg.time, v => `× ${v.toFixed(2)}`, v => { Lv.margins = { ...(Lv.margins || dm), time: +v.toFixed(2) }; changed(false); }));
   body.append(el('div', { class: 'hint' }, 'Gaz du niveau = gaz minimum trouvé par le solveur × marge gaz (au moins ×2 pour que la réserve de 50 % reste faisable). Chrono = meilleur temps avec 50 % de gaz × marge chrono.'));
@@ -385,19 +443,22 @@ function panelSolver(body) {
   if (r && r.error) body.append(el('div', { class: 'ko' }, `Impossible : ${r.error}. Modifiez le niveau puis relancez.`));
   if (Lv.hint && !Lv.dirty && !(r && r.error)) {
     body.append(el('div', { class: 'ok' }, `Niveau faisable · gaz ${Lv.fuel} · chrono ${Lv.time} s`));
+    if (r && r.fromRec) body.append(el('div', { class: 'hint' }, 'Le solveur n’a pas trouvé seul : la solution conseillée est ton vol.'));
     if (r && !r.error) body.append(el('div', { class: 'hint' }, `Gaz minimum ${r.minFuel.toFixed(2)} · meilleur temps avec 50 % de gaz ${r.tFastHalf.toFixed(1)} s · solution conseillée ${r.hintUsed.toFixed(2)} de gaz en ${r.hintT.toFixed(1)} s`));
     body.append(el('div', { class: 'row' }, el('label', {}, 'Solution'),
       el('button', { onclick: () => { ED.showHint = !ED.showHint; renderPanel(); } }, ED.showHint ? 'Masquer' : 'Afficher')));
   } else if (!r) body.append(el('div', { class: 'hint' }, 'Le solveur vérifie que le niveau est faisable, puis calcule le gaz, le chrono et la solution conseillée (aide « ? »).'));
   body.append(el('div', { class: 'row' },
-    el('button', { class: 'pri', style: 'flex:1', onclick: startSolve }, 'Lancer le solveur'),
-    el('button', { style: 'flex:1', onclick: testLevel }, 'Tester')));
+    el('button', { class: 'pri', style: 'flex:1', onclick: () => startSolve() }, 'Lancer le solveur'),
+    el('button', { style: 'flex:1', onclick: () => testLevel() }, 'Tester')));
+  body.append(el('button', { class: r && r.error ? 'pri' : '', onclick: () => testLevel(true) }, 'Piloter moi-même (gaz illimité)'),
+    el('div', { class: 'hint' }, 'Réussis le niveau : ton vol guide le solveur, et sert de solution si le solveur n’en trouve pas.'));
 }
 
-function startSolve() {
-  const Lv = EL();
+function startSolve(seeds) {
+  const Lv = EL(), mg = Lv.margins || defaultMargins(ED.cur, ED.levels.length);
   stopSolve();
-  const g = calibrate(Lv, Lv.margins || defaultMargins(ED.cur, ED.levels.length), 0.6);
+  const g = calibrate(Lv, mg, 0.6, seeds || null);
   const job = { progress: 0, cancel: false, level: Lv };
   ED.solve = job;
   renderPanel();
@@ -410,7 +471,10 @@ function startSolve() {
     if (bar) bar.style.width = Math.round(job.progress * 100) + '%';
     if (r && r.done) {
       ED.solve = null;
-      const res = r.value;
+      let res = r.value;
+      // le solveur n'a rien trouvé, mais le joueur a réussi un vol : il devient la solution
+      const rc = ED.rec && ED.rec.level === Lv ? ED.rec : null;
+      if (res.error && rc) res = { minFuel: rc.used, fuel: Math.ceil(rc.used * mg.fuel * 10) / 10, tFastHalf: rc.t, time: Math.max(1, Math.ceil(rc.t * mg.time)), hint: rc.P, hintUsed: rc.used, hintT: rc.t, fromRec: true };
       ED.lastResult = { ...res, level: Lv };
       if (!res.error) { Lv.fuel = res.fuel; Lv.time = res.time; Lv.hint = res.hint; delete Lv.dirty; ED.hintCache = null; saveDraft(); refreshLevelSelect(); }
       if (ED.tab === 'solveur') renderPanel();
@@ -422,13 +486,31 @@ function startSolve() {
 }
 function stopSolve() { if (ED.solve) ED.solve.cancel = true; ED.solve = null; }
 
-function testLevel() {
+function testLevel(record) {
   const Lv = EL();
   stopSolve();
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = 'none';
   testMode = true; screen = 'game';
   resize(); // mise en page du jeu (et non celle de l'éditeur) avant de lancer le niveau
-  loadLevel(ED.cur, Lv);
+  if (record === true) { // gaz et chrono illimités ; le vol réussi servira de base au solveur
+    recMode = { runs: [] };
+    const c = JSON.parse(JSON.stringify(Lv, (k, v) => k === '_B' ? undefined : v)); c.fuel = 9999; c.time = 9999; delete c.hint;
+    loadLevel(ED.cur, c);
+  } else loadLevel(ED.cur, Lv);
+}
+// vol du joueur réussi : on le rejoue, on en tire des points de passage pour le solveur, et il sert de solution de secours
+function recordDone(runs) {
+  if (screen !== 'game' || !testMode) return;
+  backToEditor();
+  const Lv = EL(), P = { rec: runs }, r = fly(Lv, P, null);
+  if (!r.ok) { alertBox('Ce vol ne se rejoue pas à l’identique. Réessaie avec un vol un peu plus franc.'); return; }
+  const seeds = [1, 2, 3].map(k => Lv.steps.map((_, si) => {
+    const pts = r.path.filter((_, j) => r.steps[j] === si);
+    return Array.from({ length: k }, (_, q) => pts[Math.floor((q + 1) * pts.length / (k + 1))]).filter(Boolean);
+  }));
+  ED.rec = { level: Lv, P, used: r.used, t: r.t };
+  ED.tab = 'solveur'; ED.fold = false;
+  startSolve(seeds);
 }
 
 // ===== Menu =====
@@ -470,18 +552,99 @@ function openMenu() {
 // nouveau niveau perso : vierge ou à partir d'un niveau officiel (copie, l'original n'est jamais modifié)
 function chooseTemplate() {
   modal((box, close) => {
-    const pick = src => {
+    const pick = (src, rnd) => {
       close();
-      const c = src ? JSON.parse(JSON.stringify(src, (k, v) => ['_B', 'hint', 'fuel', 'time', 'stars', 'margins'].includes(k) ? undefined : v)) : newLevel();
-      c.name = src ? `${src.name} (perso)` : 'Mon niveau'; c.dirty = true;
+      const c = rnd ? randomLevel() : src ? JSON.parse(JSON.stringify(src, (k, v) => ['_B', 'hint', 'fuel', 'time', 'stars', 'margins'].includes(k) ? undefined : v)) : newLevel();
+      if (!rnd) c.name = src ? `${src.name} (perso)` : 'Mon niveau';
+      c.dirty = true;
       if (screen === 'editor' && ED.mode === 'perso') { ED.levels.push(c); saveDraft(); selectLevel(ED.levels.length - 1); }
       else { const mine = persoList('mine'); mine.push(c); persoSave('mine', mine); closePerso(); openEditor('perso', mine.length - 1); }
     };
     const list = el('div', { class: 'menu', style: 'max-height:50vh;overflow-y:auto' },
       el('button', { class: 'pri', onclick: () => pick(null) }, 'Niveau vierge'),
+      el('button', { class: 'pri', onclick: () => pick(null, true) }, 'Aléatoire'),
       LEVELS.map((l, i) => el('button', { onclick: () => pick(l) }, `${i + 1}. ${l.name}`)));
-    box.append(el('h3', {}, 'Nouveau niveau'), el('div', { class: 'hint' }, 'Partir de zéro ou d’un niveau officiel comme modèle.'), list, el('button', { onclick: close }, 'Annuler'));
+    box.append(el('h3', {}, 'Nouveau niveau'), el('div', { class: 'hint' }, 'Partir de zéro, du hasard ou d’un niveau officiel comme modèle.'), list, el('button', { onclick: close }, 'Annuler'));
   });
+}
+
+// niveau tiré au hasard (à calibrer ensuite avec le solveur) : nombre, types, tailles, couleurs, gravités, orbites imbriquées,
+// étoiles, anneaux, ceintures, objectifs enchaînés et grand voyage, tout est tiré ; seul garde-fou : un départ hors de l'ombre
+function randomLevel() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const Lv = randomLevelTry();
+    invalidate(Lv); const st = startState(Lv);
+    if (!inShadow(snapshot(Lv, 0), st.x, st.y)) return Lv;
+  }
+  return newLevel();
+}
+function randomLevelTry() {
+  const R = (a, b) => a + Math.random() * (b - a), I = (a, b) => Math.floor(R(a, b + 1)), pickOf = a => a[Math.floor(Math.random() * a.length)], chance = p => Math.random() < p;
+  const tall = chance(0.35), Hh = tall ? 2 * WORLD_H : WORLD_H;
+  const rocky = ['terre', 'mars', 'lune', 'mercure', 'venus', 'perso'], giant = ['jupiter', 'saturne', 'uranus', 'neptune', 'perso'];
+  const planets = [];
+  const free = (x, y, r, gap = 120) => x - r > 20 && x + r < WORLD_W - 20 && y - r > 60 && y + r < Hh - 60 && planets.every(q => q.orbit || Math.hypot(q.x - x, q.y - y) > q.r + r + gap);
+  const dress = p => { // apparence au hasard
+    if (p.type === 'perso') { p.color = '#' + [0, 0, 0].map(() => I(40, 240).toString(16).padStart(2, '0')).join(''); p.style = pickOf(Object.keys(STYLES)); }
+    else if (chance(0.3)) { p.tint = '#' + [0, 0, 0].map(() => I(40, 240).toString(16).padStart(2, '0')).join(''); p.shade = +R(0.3, 0.9).toFixed(2); }
+    if (chance(0.35)) p.g = +R(0.5, 2.5).toFixed(1);
+    if (chance(0.3)) p.axis = I(-60, 60);
+    if (chance(0.25)) { if (chance(0.5)) p.ringTilt = I(-90, 90); p.ring = chance(0.7) ? pickOf(RING_COLORS) : '#' + [0, 0, 0].map(() => I(60, 240).toString(16).padStart(2, '0')).join(''); const f = pickOf(Object.keys(RING_FORMS)); if (f !== 'classique') p.ringForm = f; }
+    return p;
+  };
+  // départ : n'importe où, plutôt dans le bas ; arrivée : loin du départ
+  const sy = chance(0.75) ? I(Math.round(Hh * 0.7), Hh - 380) : I(300, Hh - 380);
+  planets.push(dress({ type: pickOf(rocky), x: I(150, 850), y: sy, r: I(45, 110) }));
+  delete planets[0].g;
+  for (let t = 0; t < 200; t++) {
+    const big = chance(0.4), r = big ? I(80, 150) : I(30, 90), x = I(100, 900), y = I(150, Hh - 150);
+    if (Math.abs(y - sy) < Hh * 0.4 || !free(x, y, r)) continue;
+    planets.push(dress({ type: pickOf(big ? giant : rocky), x, y, r })); break;
+  }
+  if (planets.length < 2) planets.push(dress({ type: pickOf(rocky), x: I(200, 800), y: sy > Hh / 2 ? 300 : Hh - 300, r: 70 }));
+  // astres de plus, étoiles comprises
+  const extra = tall ? I(2, 8) : I(0, 5);
+  for (let k = 0, t = 0; k < extra && t < 500; t++) {
+    const star = chance(0.15), big = chance(0.35), r = star ? I(40, 110) : big ? I(80, 150) : I(20, 90), x = I(60, 940), y = I(80, Hh - 80);
+    if (!free(x, y, r, star ? 200 : 100)) continue;
+    planets.push(star ? { type: 'soleil', star: true, x, y, r, temp: +R(0, 1).toFixed(2), lum: +R(0.5, 1.8).toFixed(2) } : dress({ type: pickOf(big ? giant : rocky), x, y, r }));
+    k++;
+  }
+  // orbites : n'importe quel astre (sauf le départ) peut tourner autour d'un autre, parfois en cascade
+  const Lv = { name: pickOf(['Dérive', 'Cap', 'Passage', 'Remous', 'Traversée', 'Écho', 'Halo', 'Faille', 'Vertige', 'Sillage', 'Orée', 'Abîme']) + ' ' + pickOf(['lointain', 'étroit', 'oublié', 'sauvage', 'perdu', 'des géants', 'du silence', 'pourpre', 'boréal', 'des ombres']) + (tall ? ' · grand voyage' : ''),
+    planets, start: { p: 0, a: +R(-Math.PI, Math.PI).toFixed(4) }, steps: [], dirty: true };
+  if (tall) Lv.h = Hh;
+  const nm = I(0, 3);
+  for (let k = 0; k < nm; k++) {
+    const host = I(0, planets.length - 1), hp = planets[host];
+    const moon = { type: chance(0.8) ? 'lune' : pickOf(rocky), r: I(12, Math.max(14, Math.round(hp.r * 0.45))), orbit: { p: host, d: 0, a0: +R(0, 6.28).toFixed(2), dir: chance(0.5) ? 1 : -1 } };
+    moon.orbit.d = hp.r + moon.r + I(40, 160);
+    if (chance(0.2)) { moon.type = 'soleil'; moon.star = true; moon.temp = +R(0, 1).toFixed(2); moon.lum = +R(0.5, 1.8).toFixed(2); } else dress(moon);
+    planets.push(moon); placeMoon(Lv, planets.length - 1);
+    if (moon.x < -200 || moon.x > WORLD_W + 200) planets.pop();
+  }
+  // le départ doit rester fixe et le plus bas des deux premiers astres sert de départ si l'arrivée a été tirée dessous
+  if (chance(0.15) && !planets[1].orbit) { // parfois la planète d'arrivée tourne autour d'une étoile ou d'un géant
+    const host = planets.findIndex((q, i) => i > 1 && !q.orbit && q.r >= 60);
+    if (host > 1) { const q = planets[host], p = planets[1]; p.orbit = { p: host, d: Math.round(Math.hypot(p.x - q.x, p.y - q.y)), a0: +Math.atan2(p.y - q.y, p.x - q.x).toFixed(4), dir: chance(0.5) ? 1 : -1 }; }
+  }
+  // ceintures autour d'astres fixes, si elles n'enferment ni le départ ni l'arrivée
+  for (let k = 0, nb = I(0, 2); k < nb; k++) {
+    const i = I(2, Math.max(2, planets.length - 1)), q = planets[i];
+    if (!q || q.orbit) continue;
+    const br = Math.round(q.r * R(1.8, 3) + 30), bw = I(20, 60);
+    if ([0, 1].every(j => Math.hypot(planets[j].x - q.x, planets[j].y - q.y) > br + bw + planets[j].r + 60 + (planets[j].orbit ? planets[j].orbit.d : 0))) (Lv.belts = Lv.belts || []).push({ p: i, r: br, w: bw });
+  }
+  // objectifs : 1 à 4, enchaînés au hasard ; le dernier est souvent un atterrissage
+  const nsteps = I(1, 4), solid = planets.map((q, i) => i).filter(i => !planets[i].star);
+  for (let k = 0; k < nsteps; k++) {
+    const last = k === nsteps - 1, u = Math.random();
+    if (last && u < 0.75) Lv.steps.push({ type: 'land', p: chance(0.15) ? 0 : 1 });
+    else if (u < 0.4) { const p = planets[I(1, planets.length - 1)]; Lv.steps.push({ type: 'zone', x: I(120, 880), y: Math.round(Math.max(150, Math.min(Hh - 150, p.y + R(-300, 300)))), r: I(60, 110) }); }
+    else if (u < 0.75) Lv.steps.push({ type: 'orbit', p: pickOf(planets.map((q, i) => i).filter(i => i !== 0)), n: chance(0.8) ? 1 : 2 });
+    else Lv.steps.push({ type: 'land', p: pickOf(solid.filter(i => i !== 0)) ?? 1 });
+  }
+  return Lv;
 }
 
 function newLevel() {
@@ -511,7 +674,7 @@ function publish() {
 function exportLevels() {
   const text = '// Orbite — niveaux (exporté depuis l\u2019éditeur le ' + new Date().toLocaleDateString('fr-FR') + ')\n' +
     '// planets : x, y, r, type, g (multiplicateur de gravité), star:true pour une étoile, orbit:{p, d, a0, dir} pour une lune,\n' +
-    '//           ring (couleur ou false : anneaux décoratifs), tint + shade (teinte), color + style (type « perso »), name\n' +
+    '//           ring (couleur ou false : anneaux décoratifs) + ringForm (classique, fin, large, double, penche), tint + shade (teinte), color + style (type « perso »), name\n' +
     '// belts : ceintures d\u2019astéroïdes {p, r, w} ; start : astre de départ + angle ; steps : objectifs\n' +
     '// fuel, time, hint : calculés par le solveur\nconst LEVELS = [\n' +
     cleanLevels().map(l => '  ' + JSON.stringify(l)).join(',\n') + ',\n];\n\nif (typeof module !== \'undefined\') module.exports = LEVELS;\n';
@@ -578,7 +741,7 @@ function openPerso() {
 const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, '+').replace(/_/g, '/'))));
 // ce qui part avec le niveau : tout sauf la solution
-const sharePayload = l => JSON.parse(JSON.stringify({ name: l.name || 'Niveau perso', planets: l.planets, start: l.start, steps: l.steps, belts: l.belts, fuel: l.fuel, time: l.time }, (k, v) => k === '_B' ? undefined : v));
+const sharePayload = l => JSON.parse(JSON.stringify({ name: l.name || 'Niveau perso', h: l.h, planets: l.planets, start: l.start, steps: l.steps, belts: l.belts, fuel: l.fuel, time: l.time }, (k, v) => k === '_B' ? undefined : v));
 
 function shareBox(title, text, note) {
   modal((box, close) => {
@@ -617,16 +780,19 @@ function sanitizeLevel(o) {
     if (!BODY_TYPES.includes(p.type)) throw 0;
     const q = { type: p.type, x: num(p.x, -5000, 6000), y: num(p.y, -5000, 7000), r: num(p.r, 5, 600) };
     if (p.g !== undefined) q.g = num(p.g, 0.1, 5);
-    if (p.type === 'soleil' || p.star) q.star = true;
+    if (p.type === 'soleil' || p.star) { q.star = true; if (p.temp !== undefined) q.temp = num(p.temp, 0, 1); if (p.lum !== undefined) q.lum = num(p.lum, 0.2, 3); }
     if (p.orbit) q.orbit = { p: int(p.orbit.p, n), d: num(p.orbit.d, 10, 5000), a0: num(p.orbit.a0, -100, 100), dir: p.orbit.dir === -1 ? -1 : 1 };
     if (p.ring === false) q.ring = false; else if (p.ring === true) q.ring = true; else if (hex(p.ring)) q.ring = hex(p.ring);
+    if (RING_FORMS[p.ringForm]) q.ringForm = p.ringForm;
+    if (p.ringTilt !== undefined) q.ringTilt = num(p.ringTilt, -180, 180);
+    if (p.axis !== undefined) q.axis = num(p.axis, -180, 180);
     if (hex(p.tint)) { q.tint = hex(p.tint); if (p.shade !== undefined) q.shade = num(p.shade, 0, 1); }
     if (hex(p.color)) q.color = hex(p.color);
     if (STYLES[p.style]) q.style = p.style;
     if (str(p.name, 30)) q.name = str(p.name, 30);
     return q;
   });
-  planets.forEach((p, i) => { if (p.orbit && (p.orbit.p === i || planets[p.orbit.p].orbit)) throw 0; });
+  planets.forEach((p, i) => { for (let k = i, n = 0; planets[k].orbit; n++) { k = planets[k].orbit.p; if (k === i || n > 8) throw 0; } }); // orbites imbriquées permises, sans boucle
   const steps = o.steps.map(s => {
     if (s.type === 'zone') return { type: 'zone', x: num(s.x, -5000, 6000), y: num(s.y, -5000, 7000), r: num(s.r, 10, 500) };
     if (s.type === 'land') return { type: 'land', p: int(s.p, n) };
@@ -636,6 +802,7 @@ function sanitizeLevel(o) {
   const sp = int(o.start && o.start.p, n);
   if (planets[sp].star || planets[sp].orbit) throw 0;
   const lv = { name: str(o.name, 40) || 'Niveau reçu', planets, start: { p: sp, a: num(o.start.a, -10, 10) }, steps, fuel: num(o.fuel, 0.1, 500), time: num(o.time, 1, 2000) };
+  if (o.h === 2 * WORLD_H) lv.h = o.h;
   if (Array.isArray(o.belts) && o.belts.length) lv.belts = o.belts.slice(0, 10).map(b => ({ p: int(b.p, n), r: num(b.r, 10, 3000), w: num(b.w, 2, 400) }));
   return lv;
 }
@@ -657,6 +824,7 @@ function importCode(text) {
   const k = recus.findIndex(r => levelSig(sharePayload(r)) === data.sig);
   if (k < 0) return 'Cette solution ne correspond à aucun de tes niveaux reçus : colle d’abord le niveau.';
   if (!data.hint || typeof data.hint !== 'object') return 'Solution abîmée.';
+  if (data.hint.rec && !(Array.isArray(data.hint.rec) && data.hint.rec.length < 30000 && data.hint.rec.every(r => Array.isArray(r) && (r.length === 2 || r.length === 6) && r.every(v => typeof v === 'number' && isFinite(v))))) return 'Solution abîmée.';
   recus[k].hint = data.hint; persoSave('recus', recus);
   return `Solution reçue pour « ${recus[k].name} » : l’aide « ? » montre maintenant la trajectoire conseillée.`;
 }
@@ -692,20 +860,39 @@ function editorPointerDown(e) {
     ED.drag = null;
     return;
   }
-  const Lv = EL(), [wx, wy] = toWorld(e), tol = 14 / scale;
+  const Lv = EL(), [wx, wy] = toWorld(e), tol = 22 / scale; // zones de toucher larges, faites pour le doigt
   const st = startState(Lv);
   let hit = null;
-  if (hyp(wx - st.x, wy - st.y) < 24 / scale) hit = { kind: 'start' };
+  if (hyp(wx - st.x, wy - st.y) < 30 / scale) hit = { kind: 'start' };
   if (!hit) for (let i = Lv.planets.length - 1; i >= 0; i--) { const p = Lv.planets[i]; if (hyp(wx - p.x, wy - p.y) < p.r + tol) { hit = { kind: 'body', i }; break; } }
   if (!hit) Lv.steps.forEach((s, i) => { if (!hit && s.type === 'zone' && hyp(wx - s.x, wy - s.y) < s.r + tol) hit = { kind: 'zone', i }; });
   ED.drag = { ...(hit || { kind: 'none' }), id: e.pointerId, sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, moved: false };
+  // appui long dans le vide : nouvelle planète à cet endroit
+  clearTimeout(ED.lp);
+  if (!hit) ED.lp = setTimeout(() => { const d = ED.drag; if (d && d.kind === 'none' && !d.moved && !ED.pinch) { ED.drag = null; addBodyAt(wx, wy); } }, 550);
+}
+function addBodyAt(x, y) {
+  const Lv = EL();
+  Lv.planets.push({ type: ['mars', 'terre', 'lune', 'venus', 'mercure'][Math.floor(Math.random() * 5)], x: Math.round(x), y: Math.round(y), r: 60 });
+  ED.sel = { kind: 'body', i: Lv.planets.length - 1 }; ED.tab = 'astre';
+  if (ED.fold) { ED.fold = false; editorLayout(); }
+  try { navigator.vibrate && navigator.vibrate(15); } catch (err) {}
+  changed(true); renderPanel();
+}
+// remplace le niveau en cours par un tirage au hasard
+function rerollLevel() {
+  confirmBox('Remplacer ce niveau par un tirage au hasard ?', () => {
+    ED.levels[ED.cur] = randomLevel(); ED.sel = null; ED.view = null; ED.rec = null;
+    saveDraft(); selectLevel(ED.cur);
+  });
 }
 
 function editorPointerMove(e) {
   if (ED.ptrs.has(e.pointerId)) ED.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (ED.pinch && ED.ptrs.size >= 2) {
+    clearTimeout(ED.lp);
     const [a, b] = [...ED.ptrs.values()], P = ED.pinch;
-    const base = Math.min(W / WORLD_W, (ED.mapBottom - ED.top - 8) / WORLD_H);
+    const base = Math.min(W / WORLD_W, (ED.mapBottom - ED.top - 8) / worldH(EL()));
     const sc = Math.max(base * 0.25, Math.min(base * 8, P.scale * hyp(a.x - b.x, a.y - b.y) / P.d));
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, wx = (P.mx - P.ox) / P.scale, wy = (P.my - P.oy) / P.scale;
     setView(sc, mx - wx * sc, my - wy * sc);
@@ -713,21 +900,21 @@ function editorPointerMove(e) {
   }
   const d = ED.drag;
   if (!d || e.pointerId !== d.id) return;
-  if (!d.moved && hyp(e.clientX - d.sx, e.clientY - d.sy) < 6) return;
-  d.moved = true;
+  if (!d.moved && hyp(e.clientX - d.sx, e.clientY - d.sy) < 8) return;
+  d.moved = true; clearTimeout(ED.lp);
   if (d.kind === 'none') { // un doigt dans le vide : déplacer la carte
     setView(scale, ox + e.clientX - d.lx, oy + e.clientY - d.ly);
     d.lx = e.clientX; d.ly = e.clientY;
     return;
   }
   const Lv = EL(), [wx, wy] = toWorld(e);
-  const cx = Math.max(-LIMIT, Math.min(WORLD_W + LIMIT, wx)), cy = Math.max(-LIMIT, Math.min(WORLD_H + LIMIT, wy));
+  const cx = Math.max(-LIMIT, Math.min(WORLD_W + LIMIT, wx)), cy = Math.max(-LIMIT, Math.min(worldH(Lv) + LIMIT, wy));
   if (d.kind === 'body') {
     const p = Lv.planets[d.i];
-    if (p.orbit) { const q = Lv.planets[p.orbit.p]; p.orbit.a0 = +Math.atan2(cy - q.y, cx - q.x).toFixed(4); p.orbit.d = Math.round(hyp(cx - q.x, cy - q.y)); placeMoon(Lv, d.i); }
+    if (p.orbit) { const q = Lv.planets[p.orbit.p]; p.orbit.a0 = +Math.atan2(cy - q.y, cx - q.x).toFixed(4); p.orbit.d = Math.round(hyp(cx - q.x, cy - q.y)); placeMoon(Lv, d.i); placeTree(Lv, d.i); }
     else {
       p.x = Math.round(cx); p.y = Math.round(cy);
-      Lv.planets.forEach((m, k) => { if (m.orbit && m.orbit.p === d.i) placeMoon(Lv, k); });
+      placeTree(Lv, d.i);
     }
   } else if (d.kind === 'zone') { const s = Lv.steps[d.i]; s.x = Math.round(cx); s.y = Math.round(cy); }
   else if (d.kind === 'start') {
@@ -740,15 +927,17 @@ function editorPointerMove(e) {
 }
 
 function editorPointerUp(e) {
-  ED.ptrs.delete(e.pointerId);
+  ED.ptrs.delete(e.pointerId); clearTimeout(ED.lp);
   if (ED.pinch) { if (ED.ptrs.size < 2) ED.pinch = null; return; }
 
   const d = ED.drag;
   if (!d || e.pointerId !== d.id) return;
   ED.drag = null;
   if (d.moved) { if (d.kind !== 'none' && (ED.tab === 'astre' || ED.tab === 'obj')) renderPanel(); return; }
-  if (d.kind === 'body') { ED.sel = { kind: 'body', i: d.i }; ED.tab = 'astre'; }
-  else if (d.kind === 'zone') { ED.sel = { kind: 'zone', i: d.i }; ED.tab = 'obj'; }
+  if (d.kind === 'body' || d.kind === 'zone') { // toucher un astre ou une zone ouvre ses réglages
+    ED.sel = { kind: d.kind, i: d.i }; ED.tab = d.kind === 'body' ? 'astre' : 'obj';
+    if (ED.fold) { ED.fold = false; editorLayout(); }
+  }
   else if (d.kind === 'none') ED.sel = null;
   renderPanel();
 }
@@ -766,10 +955,10 @@ function editorDraw() {
   const lw = 1.5 / scale;
   // cadre du monde visible
   ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = lw; ctx.setLineDash([6 / scale, 6 / scale]);
-  ctx.strokeRect(0, 0, WORLD_W, WORLD_H); ctx.setLineDash([]);
+  ctx.strokeRect(0, 0, WORLD_W, worldH(Lv)); ctx.setLineDash([]);
   invalidate(Lv);
   const Bs = snapshot(Lv, 0);
-  drawShadows(Bs);
+  drawLight(Bs);
   // astre sélectionné : zone de gravité
   if (ED.sel && ED.sel.kind === 'body' && Bs[ED.sel.i]) {
     const p = Bs[ED.sel.i], o = influence(Bs, ED.sel.i);
@@ -798,6 +987,7 @@ function editorDraw() {
   });
   drawBelts(Bs, performance.now() / 1000);
   Bs.forEach(b => drawBody(Bs, b));
+  drawShadows(Bs);
   // numéros des astres (repères pour les listes)
   Bs.forEach(b => {
     const sel = ED.sel && ED.sel.kind === 'body' && ED.sel.i === b.i;
