@@ -63,7 +63,7 @@ function bodyPos(L, i, t) {
 // position de tous les astres à l'instant t (temps compté depuis le premier jet)
 // B.belts : ceintures d'astéroïdes {x, y, r, w} autour d'une planète ou d'une étoile (jamais d'une lune)
 function snapshot(L, t) {
-  const withBelts = B => { B.belts = (L.belts || []).filter(b => B[b.p]).map(b => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w })); return B; };
+  const withBelts = B => { B.belts = (L.belts || []).filter(b => B[b.p]).map(b => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w, e: b.e || 1, tilt: (b.tilt || 0) * Math.PI / 180, vc: b.vc || 0, rs: b.rs || 1 })); return B; };
   const D = L._dyn;
   if (D) return withBelts(L.planets.map((p, i) => {
     if (D.gone[i]) return { i, x: 1e7, y: 1e7, vx: 0, vy: 0, r: 0, m: 0, star: !!p.star, gone: true };
@@ -77,7 +77,12 @@ function snapshot(L, t) {
   return withBelts(L.planets.map((p, i) => { const [x, y, vx, vy] = bodyPos(L, i, t); return { i, x, y, vx, vy, r: p.r, m: bodyMass(p), star: !!p.star }; }));
 }
 // le point touche-t-il une ceinture d'astéroïdes (infranchissable) ?
-const inBelt = (B, x, y) => (B.belts || []).some(b => Math.abs(hyp(x - b.x, y - b.y) - b.r) < b.w / 2 + HULL_R);
+// ceinture ovale (e : rapport petit axe / grand axe, tilt : inclinaison) : un point passe dans le repère où elle est un cercle de rayon r
+const beltLocal = (b, x, y) => { const dx = x - b.x, dy = y - b.y; if ((b.e || 1) === 1 && !b.tilt) return [dx, dy]; const c = Math.cos(b.tilt || 0), s = Math.sin(b.tilt || 0); return [dx * c + dy * s, (-dx * s + dy * c) / (b.e || 1)]; };
+const beltDist = (b, x, y) => { const [u, v] = beltLocal(b, x, y); return Math.abs(hyp(u, v) - b.r); }; // écart au milieu de l'anneau
+const beltAng = (b, x, y) => { const [u, v] = beltLocal(b, x, y); return Math.atan2(v, u); };
+const beltPt = (b, a, rr) => { const u = Math.cos(a) * rr, v = Math.sin(a) * rr * (b.e || 1); if (!b.tilt) return [b.x + u, b.y + v]; const c = Math.cos(b.tilt), s = Math.sin(b.tilt); return [b.x + u * c - v * s, b.y + u * s + v * c]; };
+const inBelt = (B, x, y) => (B.belts || []).some(b => beltDist(b, x, y) < b.w / 2 + HULL_R);
 const invalidate = L => { delete L._B; };
 
 function gravity(B, x, y) {
@@ -139,7 +144,7 @@ function physStep(B, s, th, h) {
   let [ax, ay] = gravity(B, s.x, s.y);
   if (th) { ax += th.x * THRUST * th.p; ay += th.y * THRUST * th.p; }
   s.vx += ax * h; s.vy += ay * h; s.x += s.vx * h; s.y += s.vy * h;
-  if (inBelt(B, s.x, s.y)) { const bl = (B.belts || []).find(b => Math.abs(hyp(s.x - b.x, s.y - b.y) - b.r) < b.w / 2 + HULL_R); return { crash: 'belt', p: bl ? bl.p : -1 }; }
+  if (inBelt(B, s.x, s.y)) { const bl = (B.belts || []).find(b => beltDist(b, s.x, s.y) < b.w / 2 + HULL_R); return { crash: 'belt', p: bl ? bl.p : -1 }; }
   let contact = -1;
   for (const b of B) {
     const dx = s.x - b.x, dy = s.y - b.y, d = hyp(dx, dy), min = surfR(b, dx, dy) + HULL_R;
@@ -504,6 +509,6 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
 }
 
 if (typeof module !== 'undefined') module.exports = {
-  WORLD_W, WORLD_H, worldH, PROF_N, newDyn, aliasOf, surfR, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
+  WORLD_W, WORLD_H, worldH, PROF_N, beltPt, beltDist, beltAng, newDyn, aliasOf, surfR, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
   ratioCost, bodyMass, calibrate, defaultMargins, decodeRec,
 };

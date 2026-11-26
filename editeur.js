@@ -289,6 +289,10 @@ function panelBody(body) {
       if (p.tint) body.append(slider('Nuance', 0.1, 1, 0.05, p.shade ?? 0.6, v => `${Math.round(v * 100)} %`, v => { p.shade = +v.toFixed(2); changed(true); }));
     }
     body.append(slider('Axe', -90, 90, 1, p.axis || 0, v => `${v}°`, v => { p.axis = v; if (!v) delete p.axis; changed(false); }));
+    // rotations (aspect) : sur son axe, la surface défile ; en roue, tout l'astre tourne (cratères et lave compris)
+    const trm = v => v ? `${(Math.abs(v) * 60 / (2 * Math.PI)).toFixed(1)} tr/min ${v > 0 ? '↻' : '↺'}` : 'aucune';
+    body.append(slider('Rotation sur son axe', -0.4, 0.4, 0.01, p.roll || 0, trm, v => { if (v) p.roll = +v.toFixed(2); else delete p.roll; changed(false); }));
+    body.append(slider('Rotation en roue', -0.4, 0.4, 0.01, p.spin || 0, trm, v => { if (v) p.spin = +v.toFixed(2); else delete p.spin; changed(false); }));
   }
   { // anneaux décoratifs (étoiles comprises)
     body.append(el('div', { class: 'row' }, el('label', {}, 'Anneaux'),
@@ -310,7 +314,11 @@ function panelBody(body) {
       el('span', { class: 'hint' }, 'astéroïdes infranchissables en orbite')));
     if (belt) {
       body.append(slider('Rayon', Math.round(p.r + 30), 1200, 1, belt.r, v => `${v} m`, v => { belt.r = v; changed(false); }));
-      body.append(slider('Largeur', 10, 160, 1, belt.w, v => `${v} m`, v => { belt.w = v; changed(false); }));
+      body.append(slider('Épaisseur', 6, 300, 1, belt.w, v => `${v} m`, v => { belt.w = v; changed(false); }));
+      body.append(slider('Ovale', 0.3, 1, 0.01, belt.e ?? 1, v => v >= 1 ? 'rond' : `${Math.round(v * 100)} %`, v => { if (v >= 1) delete belt.e; else belt.e = +v.toFixed(2); changed(false); }));
+      body.append(slider('Inclinaison', -90, 90, 1, belt.tilt ?? 0, v => `${v}°`, v => { if (v) belt.tilt = v; else delete belt.tilt; changed(false); }));
+      body.append(slider('Couleurs variées', 0, 1, 0.05, belt.vc ?? 0, v => v ? `${Math.round(v * 100)} %` : 'aucune', v => { if (v) belt.vc = +v.toFixed(2); else delete belt.vc; changed(false); }));
+      body.append(slider('Taille des rochers', 0.5, 2.5, 0.05, belt.rs ?? 1, v => `× ${v.toFixed(2)}`, v => { if (Math.abs(v - 1) < 0.03) delete belt.rs; else belt.rs = +v.toFixed(2); changed(false); }));
     }
   }
   // astre détachable : les impacts du vaisseau le poussent hors de son orbite et l'abîment ; il peut percuter d'autres astres
@@ -322,6 +330,7 @@ function panelBody(body) {
     el('select', { onchange: e => { if (e.target.value) p.core = e.target.value; else delete p.core; changed(false); } },
       [['', 'Selon le type'], ['roc', 'Rocheuse : croûte et gros noyau dur, sans magma'], ['magma', 'Magmatique : croûte fine, magma épais, petit noyau']]
         .map(([v, t]) => el('option', { value: v, selected: (p.core || '') === v }, t)))));
+  if (!p.star) body.append(slider('Fluidité du magma', 0.3, 3, 0.1, p.flow ?? 1, v => `× ${v.toFixed(1)}`, v => { if (Math.abs(v - 1) < 0.05) delete p.flow; else p.flow = +v.toFixed(1); changed(false); }));
   // n'importe quel astre peut tourner autour de n'importe quel autre (étoiles comprises), sauf le départ et sans boucle
   const parents = Lv.planets.map((q, i) => i).filter(i => i !== sel && !isUnder(Lv, i, sel));
   if (sel !== Lv.start.p && parents.length) body.append(el('div', { class: 'row' }, el('label', {}, 'En orbite'),
@@ -698,7 +707,7 @@ function exportLevels() {
   const text = '// Orbite — niveaux (exporté depuis l\u2019éditeur le ' + new Date().toLocaleDateString('fr-FR') + ')\n' +
     '// planets : x, y, r, type, g (multiplicateur de gravité), star:true pour une étoile, orbit:{p, d, a0, dir} pour une lune,\n' +
     '//           ring (couleur ou false : anneaux décoratifs) + ringForm (classique, fin, large, double, penche), tint + shade (teinte), color + style (type « perso »), name\n' +
-    '// belts : ceintures d\u2019astéroïdes {p, r, w} ; start : astre de départ + angle ; steps : objectifs\n' +
+    '// belts : ceintures d\u2019astéroïdes {p, r, w, e (ovale), tilt (inclinaison)} ; start : astre de départ + angle ; steps : objectifs\n' +
     '// fuel, time, hint : calculés par le solveur\nconst LEVELS = [\n' +
     cleanLevels().map(l => '  ' + JSON.stringify(l)).join(',\n') + ',\n];\n\nif (typeof module !== \'undefined\') module.exports = LEVELS;\n';
   const todo = ED.levels.filter(l => l.dirty || !l.hint).length;
@@ -817,6 +826,9 @@ function sanitizeLevel(o) {
     if (str(p.name, 30)) q.name = str(p.name, 30);
     if (p.loose === true && !q.star) q.loose = true;
     if ((p.core === 'roc' || p.core === 'magma') && !q.star) q.core = p.core;
+    if (+p.roll && !q.star) q.roll = num(p.roll, -1, 1);
+    if (+p.spin) q.spin = num(p.spin, -1, 1);
+    if (p.flow !== undefined && !q.star) q.flow = num(p.flow, 0.3, 3);
     return q;
   });
   planets.forEach((p, i) => { for (let k = i, n = 0; planets[k].orbit; n++) { k = planets[k].orbit.p; if (k === i || n > 8) throw 0; } }); // orbites imbriquées permises, sans boucle
@@ -830,7 +842,7 @@ function sanitizeLevel(o) {
   if (planets[sp].star || planets[sp].orbit) throw 0;
   const lv = { name: str(o.name, 40) || 'Niveau reçu', planets, start: { p: sp, a: num(o.start.a, -10, 10) }, steps, fuel: num(o.fuel, 0.1, 500), time: num(o.time, 1, 2000) };
   if (o.h === 2 * WORLD_H) lv.h = o.h;
-  if (Array.isArray(o.belts) && o.belts.length) lv.belts = o.belts.slice(0, 10).map(b => ({ p: int(b.p, n), r: num(b.r, 10, 3000), w: num(b.w, 2, 400) }));
+  if (Array.isArray(o.belts) && o.belts.length) lv.belts = o.belts.slice(0, 10).map(b => { const q = { p: int(b.p, n), r: num(b.r, 10, 3000), w: num(b.w, 2, 400) }; if (b.e !== undefined && +b.e < 1) q.e = num(b.e, 0.3, 1); if (b.tilt) q.tilt = num(b.tilt, -90, 90); if (+b.vc) q.vc = num(b.vc, 0, 1); if (b.rs !== undefined && +b.rs !== 1) q.rs = num(b.rs, 0.5, 2.5); return q; });
   return lv;
 }
 
