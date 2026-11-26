@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 98; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 99; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -2328,8 +2328,9 @@ function updateCam() {
     if (a < 1) { const e = a < 0.15 ? 0 : (a - 0.15) / 0.85, k = e * e * (3 - 2 * e); camY = camTarget() * k; } // un temps en haut, puis descente douce
     else camY += (camTarget() - camY) * Math.min(1, dt * 4);
   }
-  // zoom / déplacement à deux doigts (avant le lancement seulement) ; au décollage, la vue revient doucement à la normale
-  if (departed && (view.z !== 1 || view.px || view.py)) {
+  // zoom / déplacement à deux doigts (avant le lancement, et une fois le niveau terminé : la vue choisie reste figée) ;
+  // au décollage, la vue revient doucement à la normale
+  if (departed && state === 'play' && (view.z !== 1 || view.px || view.py)) {
     const k = Math.min(1, dt * 5);
     view.z += (1 - view.z) * k; view.px -= view.px * k; view.py -= view.py * k;
     if (Math.abs(view.z - 1) < 0.002 && Math.abs(view.px) < 0.5 && Math.abs(view.py) < 0.5) { view.z = 1; view.px = view.py = 0; buildTextures(); }
