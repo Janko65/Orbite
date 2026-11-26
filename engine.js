@@ -35,8 +35,25 @@ const hasMoons = L => L.planets.some(p => p.orbit);
 
 // ===== Astres mobiles =====
 // une lune a orbit = {p: astre parent, d: distance, a0: angle de départ, dir: ±1} ; vitesse angulaire réaliste √(M/d³)
+// Astres détachables (p.loose) : en partie, L._dyn garde les astres sortis de leur orbite (st : état libre à l'instant st.t,
+// prolongé en ligne droite entre deux pas), leur surface abîmée (h : rayon de la surface par secteur), leur masse et noyau
+// après fusion (m, rc), les astres absorbés (gone, alias : astre qui les a absorbés). Sans L._dyn : orbites fixes (solveur).
+const PROF_N = 72; // secteurs de la surface
+const newDyn = () => ({ st: {}, h: {}, rc: {}, m: {}, rmax: {}, gone: {}, alias: {} });
+const aliasOf = (L, i) => { const al = L._dyn && L._dyn.alias; while (al && al[i] !== undefined) i = al[i]; return i; };
+// rayon de la surface d'un astre dans la direction (dx, dy) (cratères compris)
+function surfR(b, dx, dy) {
+  if (!b.h) return b.r;
+  let a = Math.atan2(dy, dx) / (2 * Math.PI) * PROF_N; a = (a % PROF_N + PROF_N) % PROF_N;
+  const k = Math.floor(a) % PROF_N, f = a - Math.floor(a);
+  return b.h[k] * (1 - f) + b.h[(k + 1) % PROF_N] * f;
+}
 function bodyPos(L, i, t) {
-  const p = L.planets[i];
+  const p = L.planets[i], D = L._dyn;
+  if (D) {
+    if (D.gone[i]) return [1e7, 1e7, 0, 0];
+    const st = D.st[i]; if (st) { const dt = t - st.t; return [st.x + st.vx * dt, st.y + st.vy * dt, st.vx, st.vy]; }
+  }
   if (!p.orbit) return [p.x, p.y, 0, 0];
   const q = L.planets[p.orbit.p], [px, py, pvx, pvy] = bodyPos(L, p.orbit.p, t), d = p.orbit.d;
   const w = (p.orbit.dir || 1) * Math.sqrt(bodyMass(q) / (d * d * d)), a = p.orbit.a0 + w * t;
@@ -47,6 +64,12 @@ function bodyPos(L, i, t) {
 // B.belts : ceintures d'astéroïdes {x, y, r, w} autour d'une planète ou d'une étoile (jamais d'une lune)
 function snapshot(L, t) {
   const withBelts = B => { B.belts = (L.belts || []).filter(b => B[b.p]).map(b => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w })); return B; };
+  const D = L._dyn;
+  if (D) return withBelts(L.planets.map((p, i) => {
+    if (D.gone[i]) return { i, x: 1e7, y: 1e7, vx: 0, vy: 0, r: 0, m: 0, star: !!p.star, gone: true };
+    const [x, y, vx, vy] = bodyPos(L, i, t);
+    return { i, x, y, vx, vy, r: D.rmax[i] ?? p.r, m: D.m[i] ?? bodyMass(p), star: !!p.star, h: D.h[i] };
+  }));
   if (!hasMoons(L)) {
     if (!L._B) L._B = withBelts(L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star })));
     return L._B;
@@ -119,7 +142,7 @@ function physStep(B, s, th, h) {
   if (inBelt(B, s.x, s.y)) { const bl = (B.belts || []).find(b => Math.abs(hyp(s.x - b.x, s.y - b.y) - b.r) < b.w / 2 + HULL_R); return { crash: 'belt', p: bl ? bl.p : -1 }; }
   let contact = -1;
   for (const b of B) {
-    const dx = s.x - b.x, dy = s.y - b.y, d = hyp(dx, dy), min = b.r + HULL_R;
+    const dx = s.x - b.x, dy = s.y - b.y, d = hyp(dx, dy), min = surfR(b, dx, dy) + HULL_R;
     if (d >= min) continue;
     if (b.star) return { crash: 'star', p: b.i };
     const nx = dx / d, ny = dy / d;
@@ -149,10 +172,10 @@ function missionTick(L, B, m, s, dt, landedOn) {
   if (o.type === 'zone') {
     if (hyp(s.x - o.x, s.y - o.y) < o.r) { m.zoneT += dt; ok = m.zoneT >= ZONE_TIME; } else m.zoneT = 0;
   } else if (o.type === 'land') {
-    ok = landedOn === o.p;
+    ok = landedOn === o.p || (landedOn >= 0 && aliasOf(L, o.p) === landedOn); // astre absorbé : on se pose sur celui qui l'a avalé
   } else if (o.type === 'orbit') {
-    const p = B[o.p], a = Math.atan2(s.y - p.y, s.x - p.x);
-    if (s.airT > 0 && hyp(s.x - p.x, s.y - p.y) < influence(B, o.p).soi) {
+    const op = aliasOf(L, o.p), p = B[op], a = Math.atan2(s.y - p.y, s.x - p.x);
+    if (s.airT > 0 && hyp(s.x - p.x, s.y - p.y) < influence(B, op).soi) {
       if (m.orbPrev !== null) { let d = a - m.orbPrev; d = Math.atan2(Math.sin(d), Math.cos(d)); m.orbA += d; }
       m.orbPrev = a;
     } else { m.orbA = 0; m.orbPrev = null; }
@@ -401,7 +424,7 @@ function* stagedSearch(L, f, onSol) {
 // hint = solution conseillée robuste au meilleur compromis temps / gaz.
 // seeds : points de passage tirés d'un vol du joueur (wps par objectif), pour orienter la recherche
 function* calibrate(L0, margins, f = 1, seeds = null) {
-  const L = JSON.parse(JSON.stringify(L0)); delete L.hint; delete L._B;
+  const L = JSON.parse(JSON.stringify(L0)); delete L.hint; delete L._B; delete L._dyn;
   const M = margins.fuel, TAU = margins.time;
   const tol0 = { ...TOL };
   TOL.crash = CRASH_SPEED - 6; TOL.angle = LAND_ANGLE - 8; // marge de sécurité sur les solutions
@@ -481,6 +504,6 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
 }
 
 if (typeof module !== 'undefined') module.exports = {
-  WORLD_W, WORLD_H, worldH, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
+  WORLD_W, WORLD_H, worldH, PROF_N, newDyn, aliasOf, surfR, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
   ratioCost, bodyMass, calibrate, defaultMargins, decodeRec,
 };

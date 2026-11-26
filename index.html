@@ -12,6 +12,7 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>Orbite</title>
 <style>
+*{-webkit-touch-callout:none}
 html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
 canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:none}
 #safe{position:fixed;left:0;top:0;width:1px;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom);visibility:hidden;pointer-events:none}
@@ -24,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 83; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 90; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -49,7 +50,7 @@ let playCtx = null;    // partie d'un niveau perso : {kind: 'mine' (mes créatio
 // niveaux perso (créations du joueur, niveaux reçus) gardés sur l'appareil
 const persoKey = k => k === 'mine' ? 'orbite-perso' : 'orbite-recus';
 function persoList(k) { try { const a = JSON.parse(localStorage.getItem(persoKey(k)) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
-function persoSave(k, arr) { try { localStorage.setItem(persoKey(k), JSON.stringify(arr, (key, v) => key === '_B' ? undefined : v)); } catch (e) {} }
+function persoSave(k, arr) { try { localStorage.setItem(persoKey(k), JSON.stringify(arr, (key, v) => key === '_B' || key === '_dyn' ? undefined : key === 'planets' && Array.isArray(v) ? v.filter(p => !p.frag) : v)); } catch (e) {} }
 const levelTitle = () => playCtx ? (L.name || 'Niveau perso') : `Niveau ${lvl + 1}/${LV.length}`;
 let shipKind = 'fusee', updState = ''; // vaisseau choisi ; état de la vérification des mises à jour
 try { shipKind = localStorage.getItem('orbite-vaisseau') || 'fusee'; } catch (e) {}
@@ -78,9 +79,12 @@ function noteOpened() {
 }
 noteOpened(); // avant la vérification des niveaux modifiés
 
+// astres pris en compte dans les empreintes : sans les morceaux nés en partie ni le réglage « détachable »
+// (il ne joue qu'une fois le vaisseau écrasé : il ne change ni le parcours ni les étoiles)
+const sigPlanets = l => l.planets.filter(p => !p.frag).map(p => { if (!p.loose) return p; const { loose, ...q } = p; return q; });
 // empreinte d'un niveau (tout ce qui change le jeu : astres, départ, objectifs, ceintures, gaz, chrono)
 function levelSig(l) {
-  const str = JSON.stringify([l.planets, l.start, l.steps, l.belts || null, l.fuel, l.time]);
+  const str = JSON.stringify([sigPlanets(l), l.start, l.steps, l.belts || null, l.fuel, l.time]);
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36);
@@ -88,7 +92,7 @@ function levelSig(l) {
 // empreinte des étoiles : le parcours (astres, départ, objectifs, ceintures), puis le gaz et le chrono en clair,
 // pour ne retirer que les étoiles dont l'objectif est devenu plus dur
 function medalSig(l) {
-  const str = JSON.stringify([l.planets, l.start, l.steps, l.belts || null]);
+  const str = JSON.stringify([sigPlanets(l), l.start, l.steps, l.belts || null]);
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return (h >>> 0).toString(36) + '~' + l.fuel + '~' + l.time;
@@ -364,9 +368,11 @@ function inRings(p, x, y, px, py) {
   return ringForm(p).bands.some(([, , a, b]) => d > a - 0.15 && d < b + 0.15);
 }
 // passage du vaisseau : détruit les cellules sous lui et projette des pixels de poussière
-function breakRings(p, i, x, y) {
-  const f = ringForm(p), rows = ringCells(p), loc = ringLocal(p, x, y, ship.x, ship.y), da = Math.PI * 2 / RING_SEG;
-  const holes = ringHoles[i] || (ringHoles[i] = new Set()), reach = SHIP_R * 1.1, rgbBase = ringColor(p);
+function breakRings(p, i, x, y, cut = null) {
+  // cut : corps qui traverse les anneaux {x, y, vx, vy, r} (un astre détachable) ; par défaut le vaisseau
+  const C = cut || { x: ship.x, y: ship.y, vx: ship.vx, vy: ship.vy, r: SHIP_R * 1.1 }, per = cut ? 1 : 3;
+  const f = ringForm(p), rows = ringCells(p), loc = ringLocal(p, x, y, C.x, C.y), da = Math.PI * 2 / RING_SEG;
+  const holes = ringHoles[i] || (ringHoles[i] = new Set()), reach = C.r, rgbBase = ringColor(p);
   const c = Math.cos(f.tilt), sn = Math.sin(f.tilt);
   const sg0 = Math.round(((loc.a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) / da), span = Math.ceil(reach / f.flat / Math.max(1, loc.d) / da) + 1;
   rows.forEach((row, ri) => {
@@ -377,14 +383,14 @@ function breakRings(p, i, x, y) {
       if (holes.has(key)) continue;
       const a = (sg + 0.5) * da, lx = rr * Math.cos(a), ly = rr * Math.sin(a) * f.flat;
       const wx = x + lx * c - ly * sn, wy = y + lx * sn + ly * c;
-      if (hyp(wx - ship.x, wy - ship.y) > reach) continue;
+      if (hyp(wx - C.x, wy - C.y) > reach) continue;
       holes.add(key);
       const rgb = shade(rgbBase, row.k).slice(4, -1); // « r,g,b » de la bande touchée
       // débris : poussés par la coque du vaisseau (sa vitesse + un écart vers l'extérieur), puis livrés à la gravité
-      const ddx = wx - ship.x, ddy = wy - ship.y, dd = hyp(ddx, ddy) || 1;
-      for (let n = 0; n < 3; n++) {
+      const ddx = wx - C.x, ddy = wy - C.y, dd = hyp(ddx, ddy) || 1;
+      for (let n = 0; n < per; n++) {
         const k = 0.6 + Math.random() * 0.4, out = 15 + Math.random() * 40, an = Math.random() * Math.PI * 2, j = Math.random() * 12;
-        particles.push({ x: wx, y: wy, vx: ship.vx * k + ddx / dd * out + Math.cos(an) * j, vy: ship.vy * k + ddy / dd * out + Math.sin(an) * j,
+        particles.push({ x: wx, y: wy, vx: C.vx * k + ddx / dd * out + Math.cos(an) * j, vy: C.vy * k + ddy / dd * out + Math.sin(an) * j,
           life: 6 + Math.random() * 6, max: 1, rgb, sz: 0.7, grav: true });
       }
     }
@@ -405,10 +411,12 @@ function beltRocks(b) {
 }
 // roche d'une ceinture touchée au point (px, py) : chaque caillou est un petit cercle (rayon ≈ sa taille), tournant comme à l'écran
 const BELT_BINS = 96;
+let beltGone = {}; // index de ceinture → Set des cailloux arrachés (remis à zéro à chaque niveau)
 function beltRockAt(px, py, pad = 0) {
   if (!B || !B.belts) return null;
   const rot = performance.now() / 1000 * 0.02;
-  for (const b of B.belts) {
+  for (const [bi, b] of B.belts.entries()) {
+    const gone = beltGone[bi];
     const dx = px - b.x, dy = py - b.y, d = Math.hypot(dx, dy);
     if (Math.abs(d - b.r) > b.w / 2 + 12 + pad) continue;
     const rocks = beltRocks(b);
@@ -417,6 +425,7 @@ function beltRockAt(px, py, pad = 0) {
     const host = B[b.p] || { vx: 0, vy: 0 };
     let best = null, bd = Infinity;
     for (let k = -1; k <= 1; k++) for (const i of rocks.bins[(k0 + k + BELT_BINS) % BELT_BINS]) {
+      if (gone && gone.has(i)) continue;
       const r = rocks[i], a = r.a + rot, cx = b.x + Math.cos(a) * (b.r + r.dr), cy = b.y + Math.sin(a) * (b.r + r.dr), rad = r.s * 0.85;
       const dd = Math.hypot(px - cx, py - cy) - rad;
       if (dd < pad && dd < bd) { bd = dd; best = { x: cx, y: cy, r: rad, vx: host.vx, vy: host.vy, c: r.c }; }
@@ -426,11 +435,13 @@ function beltRockAt(px, py, pad = 0) {
   return null;
 }
 function drawBelts(Bs, t) {
-  for (const b of Bs.belts || []) {
+  for (const [bi, b] of (Bs.belts || []).entries()) {
+    if (L._dyn && L._dyn.gone[b.p]) continue; // l'astre est détruit : ses cailloux sont partis
     ctx.strokeStyle = 'rgba(150,130,110,0.08)'; ctx.lineWidth = b.w;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.stroke();
-    const rot = t * 0.02;
-    for (const r of beltRocks(b)) {
+    const rot = t * 0.02, gone = beltGone[bi];
+    for (const [ri, r] of beltRocks(b).entries()) {
+      if (gone && gone.has(ri)) continue;
       const a = r.a + rot, cx = b.x + Math.cos(a) * (b.r + r.dr), cy = b.y + Math.sin(a) * (b.r + r.dr);
       ctx.fillStyle = r.c; ctx.beginPath();
       r.k.forEach((k, j) => { const aa = j / 6 * Math.PI * 2 + r.a; const px = cx + Math.cos(aa) * r.s * k, py = cy + Math.sin(aa) * r.s * k; j ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
@@ -448,15 +459,37 @@ function lightDir(Bs, x, y) {
 }
 
 // dessine l'astre b (position à l'instant courant) ; p = sa définition dans le niveau
+// contour réel d'un astre abîmé (rayon par secteur)
+function profPath(x, y, h, add = 0) {
+  ctx.beginPath();
+  for (let k = 0; k <= PROF_N; k++) { const a = k / PROF_N * Math.PI * 2, r = h[k % PROF_N] + add; k ? ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r) : ctx.moveTo(x + Math.cos(a) * r, y + Math.sin(a) * r); }
+  ctx.closePath();
+}
+// noyau dur (visible au fond des cratères profonds, ou plus gros que la croûte après une fusion)
+function drawCore(x, y, r, moon) {
+  const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.1, x, y, r);
+  if (moon) { g.addColorStop(0, '#8a847c'); g.addColorStop(1, '#3a3632'); } else { g.addColorStop(0, '#8a3a1c'); g.addColorStop(0.7, '#4a1a0c'); g.addColorStop(1, '#241008'); }
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
 function drawBody(Bs, b) {
-  const p = L.planets[b.i], x = b.x, y = b.y;
+  const p = L.planets[b.i], x = b.x, y = b.y, D = L._dyn;
+  if (D && D.gone[b.i]) return; // absorbé par un autre astre
+  let hp = D && !p.star ? D.h[b.i] : null; // surface abîmée
+  const hd = D && D.heat && D.heat[b.i], cov = hd ? heatOf(b.i) : 0, tt = performance.now() / 1000;
+  const lava = D && D.lava ? D.lava[b.i] || 0 : 0;
+  if (hp && cov > 0) hp = hp.map((v, k) => v + (cov * 1.4 + lava * 3) * Math.sin(k * 0.7 + tt * (1.1 + lava) + b.i) * Math.sin(k * 0.23 - tt * 0.6)); // en fusion : la surface ondule (fort tant qu'elle est lave)
   if (p.star) {
     const c = starRGB(p).join(','), lu = starLum(p), R = p.r * (2 + lu); // halo de la couleur de l'étoile, plus grand si elle est intense
     const gl = ctx.createRadialGradient(x, y, p.r * 0.9, x, y, R);
     gl.addColorStop(0, `rgba(${c},${Math.min(0.8, 0.45 * lu)})`); gl.addColorStop(1, `rgba(${c},0)`);
     ctx.fillStyle = gl; ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill();
   }
-  if (hasRings(p)) drawRings(p, x, y, false, b.i);
+  const rings = hasRings(p) && !(D && D.ringFree && D.ringFree[b.i]);
+  if (rings) drawRings(p, x, y, false, b.i);
+  if (D && D.merges) for (const mg of D.merges) if (mg.a === b.i) { // noyau absorbé qui rejoint lentement le centre (visible par les cratères)
+    const k = 1 - mg.e; drawCore(x + (mg.S[0] + mg.off[0]) * k, y + (mg.S[1] + mg.off[1]) * k, mg.rcB * Math.sqrt(Math.max(0.05, k)), mg.core);
+  }
+  if (hp) { drawCore(x, y, D.rc[b.i], isMoonBody(b.i)); ctx.save(); profPath(x, y, hp, 0.15); ctx.clip(); }
   if (textures[b.i]) {
     if (p.axis) { ctx.save(); ctx.translate(x, y); ctx.rotate(p.axis * Math.PI / 180); ctx.drawImage(textures[b.i], -p.r, -p.r, p.r * 2, p.r * 2); ctx.restore(); } // axe incliné (purement visuel)
     else ctx.drawImage(textures[b.i], x - p.r, y - p.r, p.r * 2, p.r * 2);
@@ -484,12 +517,57 @@ function drawBody(Bs, b) {
         ctx.fillStyle = lg; ctx.beginPath(); ctx.arc(x, y, p.r, 0, Math.PI * 2); ctx.fill();
       }
     }
+    if (hd) { // incandescence : le front part du point d'impact et gagne tout l'astre, la face de nuit comprise
+      const Rf = Math.max(0.1, (wt - hd.t0) * p.r * 0.5), fl = 0.9 + 0.1 * Math.sin(performance.now() / 240 + b.i), ix = x + hd.lx, iy = y + hd.ly;
+      const g = ctx.createRadialGradient(ix, iy, 0, ix, iy, Rf), soft = Math.min(0.95, Math.max(0, 1 - p.r * 0.35 / Rf));
+      g.addColorStop(0, `rgba(255,${150 * fl | 0},50,${0.78 * fl})`); g.addColorStop(soft, `rgba(240,${95 * fl | 0},25,${0.7 * fl})`); g.addColorStop(1, 'rgba(200,60,20,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, Math.max(p.r, D.rmax[b.i] || 0) + 1, 0, Math.PI * 2); ctx.fill();
+      if (lava > 0.02) { // coulées : des veines claires glissent sur la lave
+        ctx.lineCap = 'round';
+        for (let n = 0; n < 7; n++) {
+          const rr = p.r * (0.15 + 0.11 * n), a0 = tt * (0.25 + 0.07 * n) * (n % 2 ? 1 : -1) + n * 1.7, len = 0.5 + 0.3 * Math.sin(tt * 0.7 + n);
+          ctx.strokeStyle = `rgba(255,${200 + 30 * Math.sin(tt * 3 + n) | 0},120,${0.55 * lava * cov})`; ctx.lineWidth = (1.5 + 1.5 * lava) / scale;
+          ctx.beginPath(); ctx.arc(x, y, rr, a0, a0 + len); ctx.stroke();
+        }
+        ctx.lineCap = 'butt';
+      }
+      if (cov > 0.3) for (let n = 0; n < 7; n++) { // convection : des plaques plus sombres dérivent lentement sur la surface en fusion
+        const a = n * 0.9 + tt * 0.07 * (n % 2 ? 1 : -1) + b.i, rr = p.r * (0.3 + 0.3 * (0.5 + 0.5 * Math.sin(tt * 0.15 + n * 1.3)));
+        const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr, R = p.r * (0.22 + 0.08 * Math.sin(tt * 0.3 + n)), pg = ctx.createRadialGradient(px, py, 0, px, py, R);
+        pg.addColorStop(0, `rgba(90,25,8,${0.4 * (cov - 0.3) / 0.7})`); pg.addColorStop(1, 'rgba(90,25,8,0)');
+        ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    if (hp) ctx.restore();
+    if (hd) { // halo de chaleur autour de l'astre
+      const fl = 0.85 + 0.15 * Math.sin(performance.now() / 300 + b.i * 2);
+      if (cov > 0.05) {
+        const R = p.r * (1.15 + 0.35 * cov), g = ctx.createRadialGradient(x, y, p.r * 0.8, x, y, R);
+        g.addColorStop(0, `rgba(255,110,30,${0.35 * cov * fl})`); g.addColorStop(1, 'rgba(255,80,20,0)');
+        ctx.globalCompositeOperation = 'lighter'; ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'source-over';
+      }
+    }
     if (['terre', 'venus', 'neptune', 'uranus'].includes(p.type)) {
       ctx.strokeStyle = p.type === 'venus' ? 'rgba(255,230,170,0.35)' : 'rgba(150,200,255,0.4)'; ctx.lineWidth = 2 / scale;
-      ctx.beginPath(); ctx.arc(x, y, p.r + 1 / scale, 0, Math.PI * 2); ctx.stroke();
+      if (hp) profPath(x, y, hp, 1 / scale); else { ctx.beginPath(); ctx.arc(x, y, p.r + 1 / scale, 0, Math.PI * 2); } ctx.stroke();
     }
-  }
-  if (hasRings(p)) drawRings(p, x, y, true, b.i);
+    if (hp) { // fond des cratères : croûte sombre, magma rougeoyant (planètes), noyau à nu
+      const rc = D.rc[b.i], rm = p.r * magmaK(b.i);
+      for (let k = 0; k < PROF_N; k++) {
+        const h0 = hp[k], h1 = hp[(k + 1) % PROF_N], H = D.h[b.i]; if (Math.min(H[k], H[(k + 1) % PROF_N]) > p.r - 0.6) continue; // vrai relief (sans l'ondulation)
+        const a0 = k / PROF_N * Math.PI * 2, a1 = (k + 1) / PROF_N * Math.PI * 2, hm = (h0 + h1) / 2;
+        const seg = (w, c) => { ctx.strokeStyle = c; ctx.lineWidth = w / scale; ctx.beginPath(); ctx.moveTo(x + Math.cos(a0) * h0, y + Math.sin(a0) * h0); ctx.lineTo(x + Math.cos(a1) * h1, y + Math.sin(a1) * h1); ctx.stroke(); };
+        if (hm <= rc + 0.4) continue; // noyau : déjà dessiné
+        if (rm && hm < rm) { // magma à nu : il rougeoie et palpite
+          const fl = 0.75 + 0.25 * Math.sin(performance.now() / 180 + k * 1.7);
+          ctx.globalCompositeOperation = 'lighter'; seg(12, `rgba(255,80,10,${0.18 * fl})`); seg(6, `rgba(255,120,30,${0.35 * fl})`); ctx.globalCompositeOperation = 'source-over';
+          seg(2.5, `rgba(255,${190 + 40 * fl | 0},110,1)`);
+        }
+        else seg(1.6, 'rgba(25,20,16,0.6)');
+      }
+    }
+  } else if (hp) ctx.restore();
+  if (rings) drawRings(p, x, y, true, b.i);
 }
 
 // ombres portées par les planètes (étoile considérée comme ponctuelle)
@@ -542,7 +620,7 @@ function drawShadows(Bs) {
       // ajoutés directement au masque : pas de calque intermédiaire à vider puis recopier à chaque échantillon
       mc.setTransform(tf); mc.fillStyle = '#fff'; mc.beginPath();
       for (const p of Bs) {
-        if (p.star) continue;
+        if (p.star || p.gone) continue;
         let dx = p.x - S.x, dy = p.y - S.y, d = Math.hypot(dx, dy);
         if (d <= p.r + S.r) continue;
         const sx = S.x - dy / d * off, sy = S.y + dx / d * off;
@@ -676,12 +754,14 @@ function cancelJobs() {
 }
 
 let nameT = -1e9, nameKey = '', recMode = null, testRec = null, testRuns = null; // recMode : enregistrement du vol du joueur (éditeur) // nom du niveau affiché en fondu à l'entrée
+// morceaux nés d'une planète coupée en deux : propres à la partie en cours
+function stripFrags(Lx) { if (!Lx) return; if (Lx.planets.some(p => p.frag)) Lx.planets = Lx.planets.filter(p => !p.frag); delete Lx._dyn; }
 function loadLevel(i, obj) {
-  cancelJobs();
+  cancelJobs(); stripFrags(L);
   shipPixelsOf(shipKind); // pixels du vaisseau préparés dès le chargement : rien à calculer au moment du choc
   if (hudCv.width !== cv.width || hudCv.height !== cv.height) { hudCv.width = cv.width; hudCv.height = cv.height; hudCv.getContext('2d').clearRect(0, 0, 1, 1); } // calque du fondu de fin prêt d'avance
   { const key = (obj ? 'p' : 'o') + i + ':' + ((obj || LV[i] || {}).name || ''); if (key !== nameKey || screen !== 'game') nameT = sweepT = performance.now(); nameKey = key; }
-  lvl = i; L = obj || LV[i]; invalidate(L);
+  lvl = i; L = obj || LV[i]; stripFrags(L); invalidate(L);
   if (!obj) levelPage = Math.floor(i / PER_PAGE);
   if (testMode && testRec) recMode = { runs: [], auto: testRec.auto }; // dans l'éditeur, chaque essai est enregistré
   testRuns = null;
@@ -689,10 +769,10 @@ function loadLevel(i, obj) {
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; flashes = []; particles = []; wrecks = []; touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
+  fuel = L.fuel; flashes = []; particles = []; wrecks = []; bigBlobs = []; delete L._dyn; texCache.clear(); touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
-  auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {};
+  auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {}; beltGone = {}; flyRocks = [];
   state = 'play'; stateT = 0;
   buildTextures();
   if (!obj) try { localStorage.setItem('orbite-niveau', String(i)); } catch (e) {}
@@ -1255,6 +1335,7 @@ function tick() {
       const r = physStep(launched ? snapshot(L, wt + k * h) : B, ship, null, h);
       if (r.crash) { boom(r.crash === 'belt' ? -1 : (r.p ?? -1), r.crash); break; }
     }
+    if (launched && L._dyn) stepDyn(DT);
     if (launched) wt += DT;
     B = snapshot(L, wt);
     return;
@@ -1327,13 +1408,14 @@ function tick() {
     if (r.contact >= 0) { landed = true; if (r.wasAir > 0.5) landedOn = r.contact; }
     if (outOfBounds(ship, worldH(L))) { lose('out'); return; }
   }
+  if (launched && L._dyn) stepDyn(DT);
   if (launched) wt += DT;
   elapsed = wt;
   B = snapshot(L, wt);
   // traversée d'anneaux : des poussières s'en échappent (sans effet sur le vaisseau)
   for (const b of B) {
     const p = L.planets[b.i];
-    if (hasRings(p) && inRings(p, b.x, b.y, ship.x, ship.y)) breakRings(p, b.i, b.x, b.y);
+    if (hasRings(p) && !(L._dyn && L._dyn.ringFree && L._dyn.ringFree[b.i]) && inRings(p, b.x, b.y, ship.x, ship.y)) breakRings(p, b.i, b.x, b.y);
   }
   missionTick(L, B, mission, ship, DT, landedOn);
   if (mission.done) { win(); return; }
@@ -1485,7 +1567,544 @@ function boom(pi = -1, why = '') {
     wrecks.push({ x: cx, y: cy, vx: bd.vx + tvx * 0.8 + nx * kick + ex / el * spread, vy: bd.vy + tvy * 0.8 + ny * kick + ey / el * spread, ang: 0,
       w: vt / lever * (0.3 + Math.random() * 0.3) + (Math.random() - 0.5) * (1.6 + (rest.length > 1 ? 2 : 0)), pix, rc, sz });
   }
+  if (pi >= 0 && !star && why !== 'belt' && movable(pi)) { // astre détachable : le choc creuse un cratère
+    const b = B[pi], spd = hyp(ship.vx - b.vx, ship.vy - b.vy);
+    // l'élan n'est transmis que si tout le vaisseau a été pulvérisé (aucun morceau ne repart) et seulement à un petit astre
+    // (rayon ≤ SMALL_R, lune ou planète) : un grand astre est trop lourd pour bouger à cause du vaisseau
+    if (!rest.length && L.planets[pi].r <= SMALL_R) pushBody(pi, ix, iy, ship.vx, ship.vy, SHIP_IMPACT_M);
+    if (heatOf(pi) >= 0.5) spawnBigBlobs(pi, ix, iy, nx, ny, spd); // astre en fusion : le magma s'en arrache
+    dig(pi, Math.atan2(ny, nx), Math.min(L.planets[pi].r * 0.35, 1.5 + spd * 0.06), 6 + spd * 0.08, ship.vx, ship.vy, spd);
+  }
   ship.dead = true;
+}
+// ===== Astres détachables : impacts, orbites quittées, croûte en éclats, magma, fusion des noyaux =====
+// Un astre « détachable » (p.loose, réglé dans l'éditeur) encaisse les chocs : le vaisseau qui s'écrase lui transmet une part
+// de son élan (selon la vitesse et l'endroit touché) ; l'astre quitte alors son orbite et la gravité des autres fait le reste.
+// Structure : lune = croûte en morceaux + noyau dur ; planète = croûte + couche de magma (part en bulles) + noyau dur.
+// Deux astres qui se touchent s'écrasent l'un contre l'autre (la croûte vole en éclats) ; quand les noyaux se rencontrent,
+// ils fusionnent lentement en un noyau plus gros, au centre de masse, avec la gravité des deux.
+const SHIP_IMPACT_M = 6000;   // « masse » du vaisseau pour l'élan transmis (une petite lune peut être chassée de son orbite)
+const SMALL_R = 60;          // rayon max d'un « petit » astre, que le vaisseau peut pousser (la structure, elle, dépend du type : lune ou planète)
+const MERGE_TIME = 5;         // secondes de fusion de deux noyaux
+const isMoonBody = i => { const p = L.planets[i]; return p.type === 'lune' || (!!p.orbit && !L.planets[p.orbit.p].star); };
+const coreK = i => isMoonBody(i) ? 0.55 : 0.1, magmaK = i => isMoonBody(i) ? 0 : 0.9; // rayons relatifs : noyau, haut du magma (planète : croûte fine, magma épais, petit noyau)
+function dynBody(i) {
+  if (!L._dyn) L._dyn = newDyn();
+  const D = L._dyn, p = L.planets[i];
+  if (!D.h[i]) { D.h[i] = new Array(PROF_N).fill(p.r); D.rc[i] = D.rc[i] ?? p.r * coreK(i); D.rmax[i] = Math.max(p.r, D.rc[i]); }
+  return D;
+}
+const bodyNow = i => snapshot(L, wt)[i];
+function freeBody(i) { // l'astre quitte son orbite : il garde sa vitesse du moment
+  const D = dynBody(i);
+  if (!D.st[i]) { const b = bodyNow(i); D.st[i] = { x: b.x, y: b.y, vx: b.vx, vy: b.vy, t: wt }; }
+  const st = D.st[i]; if (st.t !== wt) { st.x += st.vx * (wt - st.t); st.y += st.vy * (wt - st.t); st.t = wt; }
+  return st;
+}
+const movable = i => { const p = L.planets[i]; return !!p && !p.star && !!p.loose && !(L._dyn && L._dyn.gone[i]); };
+// élan transmis à l'astre i par un impact au point (cx, cy) d'un corps de masse mi et de vitesse (ivx, ivy)
+function pushBody(i, cx, cy, ivx, ivy, mi) {
+  if (!movable(i)) return;
+  const D = dynBody(i), st = freeBody(i), bm = D.m[i] ?? bodyMass(L.planets[i]);
+  const dx = cx - st.x, dy = cy - st.y, d = hyp(dx, dy) || 1, nx = dx / d, ny = dy / d;
+  const rvx = ivx - st.vx, rvy = ivy - st.vy, vn = rvx * nx + rvy * ny, k = mi / (bm + mi);
+  // surtout la part dirigée vers le centre ; un choc rasant pousse peu (et un peu dans le sens du frottement)
+  st.vx += (vn * nx + (rvx - vn * nx) * 0.25) * k; st.vy += (vn * ny + (rvy - vn * ny) * 0.25) * k;
+}
+// image de la texture d'un astre (couleurs des éclats)
+const texCache = new Map();
+function texPixel(i, lx, ly) {
+  const tx = textures[i], p = L.planets[i]; if (!tx) return null;
+  let e = texCache.get(tx);
+  if (!e) { try { e = { w: tx.width, h: tx.height, d: tx.getContext('2d').getImageData(0, 0, tx.width, tx.height).data }; } catch (err) { e = null; } texCache.set(tx, e); }
+  if (!e) return null;
+  if (p.axis) { const a = -p.axis * Math.PI / 180, c = Math.cos(a), s = Math.sin(a); [lx, ly] = [lx * c - ly * s, lx * s + ly * c]; }
+  const u = Math.floor((lx + p.r) / (2 * p.r) * e.w), v = Math.floor((ly + p.r) / (2 * p.r) * e.h);
+  if (u < 0 || v < 0 || u >= e.w || v >= e.h) return null;
+  const k = (v * e.w + u) * 4; return e.d[k + 3] > 60 ? `${e.d[k]},${e.d[k + 1]},${e.d[k + 2]}` : null;
+}
+const MAGMA_RGB = [[255, 196, 90], [255, 120, 30], [200, 50, 20], [90, 24, 16]];
+// creuse la surface de l'astre i autour de l'angle ang (profondeur depth, demi-largeur hw en mètres) : cratère d'impact du vaisseau
+function dig(i, ang, depth, hw, ivx, ivy, power) {
+  if (!movable(i) || depth <= 0.05) return 0;
+  const D = dynBody(i), h = D.h[i], p = L.planets[i], rc = D.rc[i];
+  const kc = ((ang / (2 * Math.PI)) * PROF_N + PROF_N) % PROF_N, hs = Math.max(0.5, hw / Math.max(1, p.r) * PROF_N / (2 * Math.PI));
+  const cut = [];
+  for (let dk = -Math.ceil(hs); dk <= Math.ceil(hs); dk++) {
+    const k = ((Math.round(kc) + dk) % PROF_N + PROF_N) % PROF_N, off = (Math.round(kc) + dk - kc) / hs;
+    if (Math.abs(off) > 1) continue;
+    const old = h[k], nh = Math.max(rc, old - depth * Math.sqrt(1 - off * off)); // cuvette
+    if (nh < old - 0.01) { cut.push([k, nh, old]); h[k] = nh; }
+  }
+  return debris(i, cut, ivx, ivy, power);
+}
+// l'astre i perd tout ce qui dépasse dans le disque (cx, cy, R) : deux astres qui s'enfoncent l'un dans l'autre
+function carve(i, cx, cy, R, ivx, ivy, power) {
+  if (!movable(i) || R <= 0) return 0;
+  const D = dynBody(i), h = D.h[i], rc = D.rc[i], b = bodyNow(i), ux = cx - b.x, uy = cy - b.y, u2 = ux * ux + uy * uy, cut = [];
+  for (let k = 0; k < PROF_N; k++) {
+    const a = k / PROF_N * Math.PI * 2, proj = ux * Math.cos(a) + uy * Math.sin(a), perp2 = u2 - proj * proj;
+    if (proj <= 0 || perp2 >= R * R) continue;
+    const t1 = proj - Math.sqrt(R * R - perp2), old = h[k], nh = Math.max(rc, t1);
+    if (nh < old - 0.01) { cut.push([k, nh, old]); h[k] = nh; }
+  }
+  return debris(i, cut, ivx, ivy, power);
+}
+// la matière arrachée part en éclats (pixels de la croûte, morceaux entiers lors des gros chocs) et, sous la croûte d'une planète,
+// en bulles de magma ; nombre de pixels proportionnel à la surface arrachée (~700 au plus par coup, pixels plus gros au-delà)
+function debris(i, cut, ivx, ivy, power, aim) {
+  if (!cut.length) return 0;
+  lavaKick(i, cut);
+  const D = L._dyn, h = D.h[i], p = L.planets[i], b = bodyNow(i), rm = p.r * magmaK(i), dth = 2 * Math.PI / PROF_N;
+  D.rmax[i] = Math.max(D.rc[i], ...h);
+  let area = 0; for (const [, nh, old] of cut) area += (old * old - nh * nh) / 2 * dth;
+  const cell = Math.max(1.3, p.r / 70, Math.sqrt(area / 700)), sz = Math.max(0.5, cell * scale * 0.5);
+  const sp = power ?? hyp(ivx - b.vx, ivy - b.vy), out = 40 + Math.min(220, sp) * 0.9;
+  const pieces = new Map(), big = area > 300; // gros chocs : des morceaux de croûte partent entiers
+  let n = 0;
+  for (const [k, nh, old] of cut) {
+    const exp = (old * old - nh * nh) / 2 * dth / (cell * cell);
+    const cnt = Math.floor(exp) + (Math.random() < exp - Math.floor(exp) ? 1 : 0);
+    for (let j = 0; j < cnt; j++) {
+      const rr = Math.sqrt(nh * nh + Math.random() * (old * old - nh * nh)), a = (k - 0.5 + Math.random()) * dth;
+      const ca = Math.cos(a), sa = Math.sin(a), x = b.x + ca * rr, y = b.y + sa * rr;
+      let vx, vy;
+      if (aim) { // aspiré : il part vers l'étoile dans un cône étroit, avec l'élan de l'astre (la fronde l'enroule)
+        const ax = aim.x - x, ay = aim.y - y, al = hyp(ax, ay) || 1, sp2 = (Math.random() - 0.5) * 0.35, v = 10 + Math.random() * 25;
+        vx = b.vx + (ax * Math.cos(sp2) - ay * Math.sin(sp2)) / al * v; vy = b.vy + (ax * Math.sin(sp2) + ay * Math.cos(sp2)) / al * v;
+      } else {
+        const v = out * (0.4 + Math.random() * 1.1), spr = (Math.random() - 0.5) * 1.1, ox2 = ca * Math.cos(spr) - sa * Math.sin(spr), oy2 = ca * Math.sin(spr) + sa * Math.cos(spr);
+        vx = b.vx + ox2 * v + (ivx - b.vx) * 0.15; vy = b.vy + oy2 * v + (ivy - b.vy) * 0.15;
+      }
+      n++;
+      if (aim) { particles.push({ x, y, vx, vy, life: Infinity, max: 1, rgb: '255,200,120', sz: sz * (1.1 + Math.random() * 0.8), grav: true, slide: true, magma: Math.random() * 0.3, free: i }); continue; } // la marée l'emporte : l'astre d'origine ne le retient plus // aspiré : un filet de matière brûlante
+      if (rr < rm) { // couche de magma : tout part en bulles brûlantes (une bulle pour ~3 cellules, plus grosses), qui refroidissent en vol
+        if (Math.random() < 0.34) particles.push({ x, y, vx: vx * 0.85, vy: vy * 0.85, life: Infinity, max: 1, rgb: '255,210,120', sz: sz * (1.4 + Math.random() * 1.4), grav: true, slide: true, magma: 0 });
+        continue;
+      }
+      const col = texPixel(i, ca * rr, sa * rr) || bodyColor(i);
+      if (big && !aim && Math.random() < 0.5) { const key = Math.floor(k / 4); let pc = pieces.get(key); if (!pc) pieces.set(key, pc = []); pc.push([x, y, col, vx, vy]); continue; }
+      particles.push({ x, y, vx, vy, life: Infinity, max: 1, rgb: col, sz, grav: true, slide: true });
+    }
+  }
+  for (const pc of pieces.values()) {
+    if (pc.length < 10) { for (const [x, y, col, vx, vy] of pc) particles.push({ x, y, vx, vy, life: Infinity, max: 1, rgb: col, sz, grav: true, slide: true }); continue; }
+    let cx = 0, cy = 0, vx = 0, vy = 0; for (const q of pc) { cx += q[0]; cy += q[1]; vx += q[3]; vy += q[4]; } const m = pc.length; cx /= m; cy /= m; vx /= m; vy /= m;
+    const pix = pc.map(q => [q[0] - cx, q[1] - cy, q[2]]), rc2 = Math.max(...pix.map(q => hyp(q[0], q[1]))) + 1;
+    wrecks.push({ x: cx, y: cy, vx, vy, ang: 0, w: (Math.random() - 0.5) * 2, pix, rc: rc2, sz, body: true });
+  }
+  return n;
+}
+// un pas des astres libres : gravité de tous les autres, puis chocs entre astres
+function stepDyn(dt) {
+  const D = L._dyn; if (!D) return;
+  const ids = Object.keys(D.st).map(Number).filter(i => !D.gone[i]);
+  if (ids.length) {
+    const n = SUB, h = dt / n;
+    for (let s = 0; s < n; s++) {
+      const t = wt + s * h, Bt = snapshot(L, t);
+      const acc = ids.map(i => { const q = Bt[i]; let ax = 0, ay = 0; for (const o of Bt) { if (o.i === i || o.gone || !o.m) continue; const dx = o.x - q.x, dy = o.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 1) continue; const g = o.m / (d2 * Math.sqrt(d2)); ax += g * dx; ay += g * dy; } return [ax, ay]; });
+      ids.forEach((i, k) => { const st = D.st[i]; st.x += st.vx * (t - st.t); st.y += st.vy * (t - st.t); st.t = t; st.vx += acc[k][0] * h; st.vy += acc[k][1] * h; });
+    }
+    for (const i of ids) { const st = D.st[i]; st.x += st.vx * (wt + dt - st.t); st.y += st.vy * (wt + dt - st.t); st.t = wt + dt; }
+  }
+  collideBodies(wt + dt, dt);
+  { const Bt = snapshot(L, wt + dt); beltSweep(Bt); tidalStrip(dt, Bt);
+    for (const o of Bt) if (!o.gone && !o.star && hasRings(L.planets[o.i]) && heatOf(o.i) > 0 && !(D.ringFree || {})[o.i]) freeRings(o.i); }
+  { // anneaux : un astre libre qui les traverse (ou dont les anneaux balaient un autre astre) les creuse
+    const Bt = snapshot(L, wt + dt);
+    for (const h of Bt) {
+      const p = L.planets[h.i]; if (h.gone || !hasRings(p) || (D.ringFree || {})[h.i]) continue;
+      const out = Math.max(...ringForm(p).bands.map(bd => bd[3])) * p.r;
+      for (const o of Bt) {
+        if (o === h || o.gone || o.star || (!D.st[o.i] && !D.st[h.i])) continue;
+        if (!D.st[o.i] && L.planets[o.i].orbit && L.planets[o.i].orbit.p === h.i) continue; // ses propres lunes, toujours sur leur orbite
+        if (hyp(o.x - h.x, o.y - h.y) < out + o.r) breakRings(p, h.i, h.x, h.y, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, r: o.r });
+      }
+    }
+  }
+  // fusions en cours : l'astre absorbé (son noyau) rejoint lentement le centre ; le noyau commun grossit
+  for (const mg of D.merges || []) {
+    mg.p = Math.min(1, (wt + dt - mg.t0) / MERGE_TIME);
+    const e = mg.p * mg.p * (3 - 2 * mg.p), de = e - mg.e; mg.e = e;
+    if (D.st[mg.a] && de > 0) { D.st[mg.a].x += mg.S[0] * de; D.st[mg.a].y += mg.S[1] * de; }
+    D.rc[mg.a] = Math.sqrt(mg.rcA * mg.rcA + mg.rcB * mg.rcB * e);
+    const h = D.h[mg.a];
+    if (mg.grow > 1) { const f0 = 1 + (mg.grow - 1) * (e - de), f1 = 1 + (mg.grow - 1) * e; for (let k = 0; k < PROF_N; k++) h[k] *= f1 / f0; } // la lave absorbée gonfle la survivante
+    for (let k = 0; k < PROF_N; k++) h[k] = Math.max(h[k], D.rc[mg.a]);
+    D.rmax[mg.a] = Math.max(...h);
+  }
+  if (D.merges) D.merges = D.merges.filter(mg => mg.p < 1);
+  for (const rp of D.ramp || []) { const u = Math.min(1, (wt + dt - rp.t0) / 2); D.m[rp.i] = rp.from + (rp.to - rp.from) * u * u * (3 - 2 * u); rp.done = u >= 1; }
+  if (D.ramp) D.ramp = D.ramp.filter(rp => !rp.done);
+  for (const k in D.lava || {}) if (!D.gone[k] && D.h[k]) lavaStep(+k, dt);
+  // les formes creusées s'arrondissent peu à peu (liquéfaction très lente) : diffusion du rayon entre secteurs voisins
+  for (const k in D.h) {
+    if (D.gone[k]) continue;
+    const h = D.h[k], rc = D.rc[k], hot = heatOf(+k), al = Math.min(0.45, (0.05 + 0.1 * hot) * dt);
+    let any = false; for (let n = 0; n < PROF_N; n++) if (Math.abs(h[n] - h[(n + 1) % PROF_N]) > 0.05) { any = true; break; }
+    if (!any) continue;
+    const o = h.slice();
+    for (let n = 0; n < PROF_N; n++) h[n] = Math.max(rc, o[n] + al * (o[(n + PROF_N - 1) % PROF_N] + o[(n + 1) % PROF_N] - 2 * o[n]));
+    D.rmax[k] = Math.max(rc, ...h);
+  }
+}
+// part de l'astre déjà incandescente (0 → 1) : le front de chaleur part du point d'impact et traverse l'astre en ~4 s
+function heatOf(i) {
+  const D = L._dyn, hd = D && D.heat && D.heat[i]; if (!hd) return 0;
+  const r = L.planets[i].r; return Math.min(1, Math.max(0, (wt - hd.t0) * r * 0.5) / (2 * r));
+}
+function collideBodies(t, dt) {
+  const D = L._dyn, Bt = snapshot(L, t);
+  for (let i = 0; i < Bt.length; i++) for (let j = i + 1; j < Bt.length; j++) {
+    const a = Bt[i], b = Bt[j];
+    if (a.gone || b.gone || (!D.st[i] && !D.st[j])) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, d = hyp(dx, dy) || 1, nx = dx / d, ny = dy / d;
+    if (d > a.r + b.r) continue;
+    if (a.star || b.star) { // un astre tombé dans une étoile s'y consume
+      const [S, P] = a.star ? [a, b] : [b, a];
+      if (d < S.r + surfR(P, S.x - P.x, S.y - P.y)) burnBody(P.i, S); // au contact
+      continue;
+    }
+    const sa = surfR(a, dx, dy), sb = surfR(b, -dx, -dy), ov = sa + sb - d;
+    if (ov <= 0) continue;
+    const key = i + ':' + j; D.touch = D.touch || {};
+    if (!D.touch[key]) { // premier contact : gros éclair et onde de choc
+      D.touch[key] = true;
+      const cx = a.x + nx * sa, cy = a.y + ny * sa, rv0 = hyp(a.vx - b.vx, a.vy - b.vy), R = Math.min(a.r, b.r) * 2.2 + rv0 * 0.8;
+      flashes.push({ x: cx, y: cy, r: R, t0: performance.now(), rgb: '255,236,200', dur: 900, ring: true });
+      flashes.push({ x: cx, y: cy, r: R * 0.5, t0: performance.now(), rgb: '255,255,255', dur: 350 });
+      for (const [k, o, sg] of [[i, a, 1], [j, b, -1]]) if (movable(k) && heatOf(k) >= 0.5) spawnBigBlobs(k, cx, cy, -nx * sg, -ny * sg, rv0); // déjà en fusion : le magma s'arrache
+      // l'onde de choc chauffe les astres touchés : ils rougeoient depuis le point d'impact jusqu'à devenir incandescents
+      D.heat = D.heat || {};
+      for (const [k, o] of [[i, a], [j, b]]) if (movable(k) && !D.heat[k]) D.heat[k] = { lx: cx - o.x, ly: cy - o.y, t0: t };
+    }
+    const rcA = D.rc[i] ?? L.planets[i].r * coreK(i), rcB = D.rc[j] ?? L.planets[j].r * coreK(j);
+    const la = movable(i), lb = movable(j), ra = la ? rcA : a.r, rb = lb ? rcB : b.r; // un astre fixe est dur jusqu'à sa surface
+    const rv0 = hyp(a.vx - b.vx, a.vy - b.vy), liquid = magmaK(i) && magmaK(j) && heatOf(i) > 0.3 && heatOf(j) > 0.3;
+    if (d < ra + rb || (liquid && rv0 < 25 && d < 0.5 * (sa + sb))) {
+      // un astre qui traverse une planète assez vite la tranche en deux ; sinon les deux fusionnent (deux masses de lave lentes se mêlent)
+      const ma = D.m[i] ?? bodyMass(L.planets[i]), mb = D.m[j] ?? bodyMass(L.planets[j]);
+      const [P, Q, PB, QB] = ma >= mb ? [i, j, a, b] : [j, i, b, a];
+      if (!liquid && rv0 >= SPLIT_V && magmaK(P) && movable(P) && splitPlanet(P, Q, PB, QB)) continue;
+      mergeBodies(i, j); continue;
+    }
+    // les croûtes s'écrasent : chacune perd ce qui dépasse dans l'autre (seulement les astres détachables), partage selon la masse
+    const rv = hyp(a.vx - b.vx, a.vy - b.vy), mA = D.m[i] ?? bodyMass(L.planets[i]), mB = D.m[j] ?? bodyMass(L.planets[j]);
+    const shA = !la ? 0 : !lb ? 1 : mB / (mA + mB); // part du chevauchement retirée à A (le plus léger s'abîme le plus)
+    // un noyau dur ne s'use pas : quand l'un n'a plus de croûte ni de magma de ce côté, c'est l'autre qui se creuse
+    const avA = la ? Math.max(0, sa - rcA) : 0, avB = lb ? Math.max(0, sb - rcB) : 0;
+    let dA = ov * shA, dB = ov - dA;
+    if (dB > avB) { dA += dB - avB; dB = avB; }
+    if (dA > avA) { dB = Math.min(avB, dB + dA - avA); dA = avA; }
+    if (la && dA > 0) carve(i, b.x, b.y, sb - dB + 0.3, b.vx, b.vy, rv);
+    if (lb && dB > 0) carve(j, a.x, a.y, sa - dA + 0.3, a.vx, a.vy, rv);
+    // choc mou : la croûte absorbe une partie du rapprochement
+    const ma = la ? (D.m[i] ?? bodyMass(L.planets[i])) : Infinity, mb = lb ? (D.m[j] ?? bodyMass(L.planets[j])) : Infinity;
+    const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+    if (vn < 0) {
+      const J = -vn * Math.min(1, 1.5 * dt) / ((la ? 1 / ma : 0) + (lb ? 1 / mb : 0) || 1); // la croûte freine le rapprochement sans l'arrêter net
+      if (la) { const st = freeBody(i); st.vx -= J / ma * nx; st.vy -= J / ma * ny; }
+      if (lb) { const st = freeBody(j); st.vx += J / mb * nx; st.vy += J / mb * ny; }
+    }
+  }
+}
+// deux noyaux se touchent : fusion lente (le plus lourd, ou l'astre fixe, absorbe l'autre)
+function mergeBodies(i, j) {
+  const D = L._dyn;
+  if ((D.merges || []).some(mg => mg.b === i || mg.b === j)) return;
+  const mi = D.m[i] ?? bodyMass(L.planets[i]), mj = D.m[j] ?? bodyMass(L.planets[j]);
+  let a = i, b = j;
+  if (!movable(i) || (movable(j) && mj > mi)) { a = j; b = i; }
+  if (!movable(a)) { a = !movable(i) ? i : j; b = a === i ? j : i; } // un astre fixe garde sa place
+  if (!movable(b)) return;
+  const Bt = snapshot(L, wt), A = Bt[a], Bb = Bt[b], ma = D.m[a] ?? bodyMass(L.planets[a]), mb = D.m[b] ?? bodyMass(L.planets[b]);
+  dynBody(a); dynBody(b);
+  const rcB = D.rc[b];
+  const liquidM = magmaK(a) && magmaK(b) && heatOf(a) > 0.3 && heatOf(b) > 0.3;
+  let grow = 1;
+  if (liquidM) { // deux masses de lave : la matière de l'autre rejoint la survivante, qui s'arrondit en grossissant
+    const area = q => q.reduce((s2, r) => s2 + r * r, 0); grow = Math.sqrt((area(D.h[a]) + area(D.h[b])) / area(D.h[a]));
+  } else { const hB = D.h[b], cut = []; for (let k = 0; k < PROF_N; k++) if (hB[k] > D.rc[b] + 0.01) { cut.push([k, D.rc[b], hB[k]]); hB[k] = D.rc[b]; } debris(b, cut, A.vx, A.vy, hyp(A.vx - Bb.vx, A.vy - Bb.vy)); } // toute sa croûte vole en éclats
+  let S = [0, 0];
+  if (movable(a)) { // centre de masse ; quantité de mouvement conservée
+    const st = freeBody(a);
+    st.vx = (ma * A.vx + mb * Bb.vx) / (ma + mb); st.vy = (ma * A.vy + mb * Bb.vy) / (ma + mb);
+    S = [(Bb.x - A.x) * mb / (ma + mb), (Bb.y - A.y) * mb / (ma + mb)];
+  }
+  freeChildren(b); releaseBelt(b, freeBody(b));
+  if (heatOf(a) >= 0.5) { const dx = Bb.x - A.x, dy = Bb.y - A.y, dd = hyp(dx, dy) || 1, sr = surfR(A, dx, dy); spawnBigBlobs(a, A.x + dx / dd * sr, A.y + dy / dd * sr, dx / dd, dy / dd, hyp(A.vx - Bb.vx, A.vy - Bb.vy) + 40); }
+  D.m[a] = ma + mb; D.gone[b] = true; D.alias[b] = a; delete D.st[b];
+  (D.merges = D.merges || []).push({ a, b, t0: wt, p: 0, e: 0, S, rcA: D.rc[a], rcB, off: [Bb.x - A.x - S[0], Bb.y - A.y - S[1]], core: isMoonBody(b), grow, h0: D.h[a].slice() });
+  if (liquidM) { (D.lava = D.lava || {})[a] = 1; (D.hv = D.hv || {})[a] = D.hv[a] || new Array(PROF_N).fill(0); }
+  flashes.push({ x: (A.x + Bb.x) / 2, y: (A.y + Bb.y) / 2, r: 60 + L.planets[b].r * 1.5, t0: performance.now(), rgb: '255,190,120', dur: 1200, ring: true }); // les noyaux se rencontrent
+}
+// un astre disparaît : les lunes qui tournaient autour continuent librement, avec leur vitesse du moment
+const freeChildren = i => L.planets.forEach((q, k) => { if (q.orbit && q.orbit.p === i && !(L._dyn && L._dyn.gone[k])) freeBody(k); });
+// un astre touche une étoile : il est entièrement réduit en pixels (croûte, magma, noyau), qui tombent dans l'étoile et s'y consument ;
+// l'étoile ne bouge pas, mais sa gravité est décuplée (montée sur 2 s)
+function burnBody(i, S) {
+  freeChildren(i); releaseBelt(i, freeBody(i));
+  const D = dynBody(i), b = bodyNow(i), p = L.planets[i], h = D.h[i], rc = D.rc[i], rm = p.r * magmaK(i), moon = isMoonBody(i);
+  const area = Math.PI * p.r * p.r, cell = Math.max(1.3, Math.sqrt(area / 1600)), sz = Math.max(0.5, cell * scale * 0.5), hot = heatOf(i);
+  for (let y = -p.r; y <= p.r; y += cell) for (let x = -p.r; x <= p.r; x += cell) {
+    const rr = hyp(x, y); if (rr > surfR({ h, r: p.r }, x, y)) continue;
+    const col = rr <= rc ? (moon ? '90,86,80' : '110,40,20') : rr < rm ? MAGMA_RGB[1].join(',') : (hot > 0.5 ? '240,110,40' : texPixel(i, x, y) || bodyColor(i));
+    const a = Math.atan2(y, x), v = 8 + Math.random() * 30;
+    particles.push({ x: b.x + x, y: b.y + y, vx: b.vx + Math.cos(a) * v, vy: b.vy + Math.sin(a) * v, life: Infinity, max: 1, rgb: col, sz, grav: true, slide: true, wait: Math.random() * 0.25 });
+  }
+  D.gone[i] = true; D.alias[i] = S.i; delete D.st[i];
+  const m0 = D.m[S.i] ?? bodyMass(L.planets[S.i]); (D.ramp = D.ramp || []).push({ i: S.i, from: m0, to: m0 * 10, t0: wt });
+  flashes.push({ x: b.x, y: b.y, r: 60 + p.r * 1.5, t0: performance.now(), rgb: bodyColor(S.i), dur: 1100, ring: true });
+}
+// grosses bulles de magma arrachées à un astre en fusion : de petits astres liquides, avec leur propre gravité
+let bigBlobs = [];
+function spawnBigBlobs(i, ix, iy, nx, ny, power) {
+  const p = L.planets[i], b = bodyNow(i), n = 1 + (Math.random() < 0.5 ? 1 : 0);
+  for (let k = 0; k < n; k++) {
+    const r = p.r * (0.06 + Math.random() * 0.1), a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 1.1, v = 25 + Math.min(150, power) * 0.4 + Math.random() * 25;
+    bigBlobs.push({ x: ix + Math.cos(a) * (r + 2), y: iy + Math.sin(a) * (r + 2), vx: b.vx + Math.cos(a) * v, vy: b.vy + Math.sin(a) * v, r, m: K * r * r * r * 3, heat: 1, ph: Math.random() * 6 });
+  }
+}
+// gravité des grosses bulles (pour les pixels et entre elles)
+function blobGravity(x, y, skip) {
+  let ax = 0, ay = 0;
+  for (const g of bigBlobs) { if (g === skip) continue; const dx = g.x - x, dy = g.y - y, d2 = Math.max(dx * dx + dy * dy, g.r * g.r); const f = g.m / (d2 * Math.sqrt(d2)); ax += f * dx; ay += f * dy; }
+  return [ax, ay];
+}
+function moveBigBlobs(fdt) {
+  if (!bigBlobs.length || !B || screen !== 'game') return;
+  for (const g of bigBlobs) {
+    const [ax, ay] = gravity(B, g.x, g.y), [bx, by] = blobGravity(g.x, g.y, g);
+    g.vx += (ax + bx) * fdt; g.vy += (ay + by) * fdt; g.x += g.vx * fdt; g.y += g.vy * fdt;
+    g.heat = Math.max(0, g.heat - fdt / 25); g.ph += fdt;
+    for (const o of B) { // contact avec un astre : la bulle s'écrase en gouttes (ou se fond dans un astre en fusion), ou brûle dans une étoile
+      if (o.gone) continue;
+      const dx = g.x - o.x, dy = g.y - o.y, d = hyp(dx, dy), sr = o.h ? surfR(o, dx, dy) : o.r;
+      if (d > sr + g.r * 0.8) continue;
+      g.dead = true;
+      if (o.star) break;
+      const nx = dx / (d || 1), ny = dy / (d || 1), rv = hyp(g.vx - o.vx, g.vy - o.vy), molten = heatOf(o.i) > 0.6 && rv < 40;
+      const cnt = Math.min(160, Math.round(g.r * g.r * 1.2 * (molten ? 0.3 : 1)));
+      for (let k = 0; k < cnt; k++) {
+        const a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 2.4, v = (molten ? 8 : 15) + Math.random() * rv * 0.5;
+        particles.push({ x: o.x + nx * (sr + 1), y: o.y + ny * (sr + 1), vx: o.vx + Math.cos(a) * v, vy: o.vy + Math.sin(a) * v, life: Infinity, max: 1, rgb: '255,170,60', sz: 1 + Math.random() * 1.5, grav: true, slide: true, magma: 1 - g.heat });
+      }
+      break;
+    }
+    if (g.dead) continue;
+    for (const o of bigBlobs) { // deux bulles qui se touchent n'en font qu'une
+      if (o === g || o.dead || hyp(o.x - g.x, o.y - g.y) > o.r + g.r) continue;
+      const m = o.m + g.m; g.vx = (g.vx * g.m + o.vx * o.m) / m; g.vy = (g.vy * g.m + o.vy * o.m) / m;
+      g.x = (g.x * g.m + o.x * o.m) / m; g.y = (g.y * g.m + o.y * o.m) / m; g.r = Math.cbrt(g.r ** 3 + o.r ** 3); g.m = m; g.heat = Math.max(g.heat, o.heat); o.dead = true;
+    }
+  }
+  bigBlobs = bigBlobs.filter(g => !g.dead && g.x > -2000 && g.x < WORLD_W + 2000 && g.y > -2000 && g.y < worldH(L) + 2000);
+}
+function drawBigBlobs() {
+  const t = performance.now() / 1000;
+  for (const g of bigBlobs) {
+    const hot = g.heat, path = (add) => { ctx.beginPath(); for (let k = 0; k <= 24; k++) { const a = k / 24 * Math.PI * 2, r = g.r * (1 + 0.07 * Math.sin(3 * a + g.ph * 2.1) + 0.05 * Math.sin(5 * a - g.ph * 1.6)) + add; k ? ctx.lineTo(g.x + Math.cos(a) * r, g.y + Math.sin(a) * r) : ctx.moveTo(g.x + Math.cos(a) * r, g.y + Math.sin(a) * r); } ctx.closePath(); };
+    if (hot > 0.05) { ctx.globalCompositeOperation = 'lighter'; const hg = ctx.createRadialGradient(g.x, g.y, g.r * 0.5, g.x, g.y, g.r * 2.4); hg.addColorStop(0, `rgba(255,110,30,${0.4 * hot})`); hg.addColorStop(1, 'rgba(255,80,20,0)'); ctx.fillStyle = hg; ctx.beginPath(); ctx.arc(g.x, g.y, g.r * 2.4, 0, Math.PI * 2); ctx.fill(); ctx.globalCompositeOperation = 'source-over'; }
+    const c0 = [255, 200, 110].map((v, k) => Math.round(v * hot + [70, 30, 20][k] * (1 - hot))), c1 = [230, 80, 20].map((v, k) => Math.round(v * hot + [40, 18, 12][k] * (1 - hot)));
+    const gr = ctx.createRadialGradient(g.x - g.r * 0.3, g.y - g.r * 0.3, g.r * 0.1, g.x, g.y, g.r * 1.1);
+    gr.addColorStop(0, `rgb(${c0})`); gr.addColorStop(1, `rgb(${c1})`);
+    ctx.fillStyle = gr; path(0); ctx.fill();
+  }
+}
+
+// ===== Ceintures arrachées, anneaux libérés, aspiration par une étoile =====
+// cailloux de ceinture arrachés par un astre libre : ils volent sous la gravité et creusent des cratères là où ils tombent
+let flyRocks = [];
+function beltSweep(Bt) {
+  const D = L._dyn, rot = performance.now() / 1000 * 0.02;
+  for (const [bi, b] of (Bt.belts || []).entries()) {
+    if (D.gone[b.p]) continue;
+    const host = Bt[b.p], rocks = beltRocks(b), gone = beltGone[bi] || (beltGone[bi] = new Set());
+    for (const o of Bt) {
+      if (o.gone || o.star || o.i === b.p || !D.st[o.i]) continue;
+      const dd = hyp(o.x - b.x, o.y - b.y); if (Math.abs(dd - b.r) > b.w / 2 + o.r + 10) continue;
+      rocks.forEach((r, ri) => {
+        if (gone.has(ri)) return;
+        const a = r.a + rot, cx = b.x + Math.cos(a) * (b.r + r.dr), cy = b.y + Math.sin(a) * (b.r + r.dr), dx = cx - o.x, dy = cy - o.y, d = hyp(dx, dy) || 1;
+        if (d > surfR(o, dx, dy) + r.s) return;
+        gone.add(ri);
+        const rv = hyp(o.vx - host.vx, o.vy - host.vy), out = 15 + rv * (0.3 + Math.random() * 0.4);
+        flyRocks.push({ x: cx, y: cy, vx: host.vx * 0.5 + o.vx * 0.5 + dx / d * out, vy: host.vy * 0.5 + o.vy * 0.5 + dy / d * out, r: r.s * 0.85, s: r.s, c: r.c, k: r.k, a: r.a, w: (Math.random() - 0.5) * 4 });
+        if (movable(o.i)) dig(o.i, Math.atan2(dy, dx), Math.min(r.s * 1.2, 1 + rv * 0.05), r.s * 1.6, host.vx, host.vy, rv); // le caillou entame l'astre au passage
+      });
+    }
+  }
+}
+// une ceinture dont l'astre disparaît : tous ses cailloux s'en vont, avec la vitesse de leur orbite
+function releaseBelt(i, st) {
+  const Bt = snapshot(L, wt), rot = performance.now() / 1000 * 0.02, m = L._dyn.m[i] ?? bodyMass(L.planets[i]);
+  (L.belts || []).forEach((bl, bi) => {
+    if (bl.p !== i) return;
+    const b = Bt.belts.find(q => q.p === i); if (!b) return;
+    const gone = beltGone[bi] || (beltGone[bi] = new Set()), v = Math.sqrt(m / Math.max(1, b.r));
+    beltRocks(b).forEach((r, ri) => {
+      if (gone.has(ri)) return; gone.add(ri);
+      const a = r.a + rot, rr = b.r + r.dr, cx = st.x + Math.cos(a) * rr, cy = st.y + Math.sin(a) * rr;
+      flyRocks.push({ x: cx, y: cy, vx: st.vx - Math.sin(a) * v, vy: st.vy + Math.cos(a) * v, r: r.s * 0.85, s: r.s, c: r.c, k: r.k, a: r.a, w: (Math.random() - 0.5) * 2 });
+    });
+  });
+}
+function moveFlyRocks(fdt) {
+  if (!flyRocks.length || !B || screen !== 'game') return;
+  for (const q of flyRocks) {
+    const [ax, ay] = gravity(B, q.x, q.y); q.vx += ax * fdt; q.vy += ay * fdt; q.x += q.vx * fdt; q.y += q.vy * fdt; q.a += q.w * fdt;
+    for (const o of B) {
+      if (o.gone) continue;
+      const dx = q.x - o.x, dy = q.y - o.y, d = hyp(dx, dy), sr = o.h ? surfR(o, dx, dy) : o.r;
+      if (d > sr + q.r) continue;
+      q.dead = true;
+      const rv = hyp(q.vx - o.vx, q.vy - o.vy), nx = dx / (d || 1), ny = dy / (d || 1);
+      if (o.star) break;
+      if (movable(o.i)) { dig(o.i, Math.atan2(ny, nx), Math.min(q.r * 1.5, 1 + rv * 0.06), q.r * 2 + rv * 0.05, q.vx, q.vy, rv); pushBody(o.i, o.x + nx * sr, o.y + ny * sr, q.vx, q.vy, K * q.r ** 3); }
+      const rgb = rgbOf(q.c), n = Math.min(40, Math.round(q.r * q.r));
+      for (let k = 0; k < n; k++) { const a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 2.2, v = 8 + Math.random() * (10 + rv * 0.4); particles.push({ x: o.x + nx * (sr + 0.5), y: o.y + ny * (sr + 0.5), vx: o.vx + Math.cos(a) * v, vy: o.vy + Math.sin(a) * v, life: Infinity, max: 1, rgb, sz: 0.9, grav: true, slide: true }); }
+      if (rv > 30) flashes.push({ x: o.x + nx * sr, y: o.y + ny * sr, r: 8 + q.r * 2, t0: performance.now(), rgb: '255,240,220' });
+      break;
+    }
+  }
+  flyRocks = flyRocks.filter(q => !q.dead && q.x > -2000 && q.x < WORLD_W + 2000 && q.y > -2000 && q.y < worldH(L) + 2000);
+}
+function drawFlyRocks() {
+  for (const q of flyRocks) {
+    ctx.fillStyle = q.c; ctx.beginPath();
+    q.k.forEach((k, j) => { const aa = j / 6 * Math.PI * 2 + q.a, px = q.x + Math.cos(aa) * q.s * k, py = q.y + Math.sin(aa) * q.s * k; j ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.closePath(); ctx.fill();
+  }
+}
+// anneaux d'une planète qui entre en fusion : chaque morceau d'anneau restant devient un pixel libre, lancé sur son orbite
+function freeRings(i) {
+  const D = L._dyn, p = L.planets[i], b = bodyNow(i), f = ringForm(p), rows = ringCells(p), da = Math.PI * 2 / RING_SEG, holes = ringHoles[i] || new Set();
+  const c = Math.cos(f.tilt), sn = Math.sin(f.tilt), base = ringColor(p), m = D.m[i] ?? bodyMass(p);
+  rows.forEach((row, ri) => {
+    const r0 = (row.a + row.b) / 2 * p.r, v = Math.sqrt(m / r0), rgb = shade(base, row.k).slice(4, -1);
+    for (let sg = 0; sg < RING_SEG; sg += 2) {
+      if (holes.has(ri * RING_SEG + sg)) continue;
+      const a = (sg + Math.random() * 2) * da, rr = r0 + (Math.random() - 0.5) * RING_DR * p.r, lx = rr * Math.cos(a), ly = rr * Math.sin(a) * f.flat, vlx = -Math.sin(a) * v, vly = Math.cos(a) * v * f.flat;
+      particles.push({ x: b.x + lx * c - ly * sn, y: b.y + lx * sn + ly * c, vx: b.vx + vlx * c - vly * sn, vy: b.vy + vlx * sn + vly * c, life: Infinity, max: 1, rgb, sz: 0.8, grav: true, slide: true });
+    }
+  });
+  (D.ringFree = D.ringFree || {})[i] = true;
+}
+// marée d'une étoile : un astre qui s'en approche est étiré et aspiré, sa face tournée vers elle (et un peu la face opposée)
+// part en un flot de pixels qui s'enroule dans l'étoile ; au contact, il est réduit en pixels
+function tidalStrip(dt, Bt) {
+  const D = L._dyn;
+  for (const o of Bt) {
+    if (o.gone || o.star || !D.st[o.i] || !movable(o.i)) continue;
+    for (const S of Bt) {
+      if (!S.star) continue;
+      const dx = S.x - o.x, dy = S.y - o.y, d = hyp(dx, dy), zone = S.r + o.r * 3 + 40;
+      if (d > zone) continue;
+      const u = Math.min(1, (zone - d) / (zone - S.r)), a = Math.atan2(dy, dx), rate = (6 + 90 * u * u) * dt;
+      D.heat = D.heat || {}; if (!D.heat[o.i]) D.heat[o.i] = { lx: dx / d * o.r, ly: dy / d * o.r, t0: wt };
+      stripSide(o.i, a, rate, o.r * (0.35 + 0.3 * u), S);
+      stripSide(o.i, a + Math.PI, rate * 0.35, o.r * 0.3, S);
+    }
+  }
+}
+function stripSide(i, ang, depth, hw, S) {
+  const D = L._dyn, h = D.h[i], p = L.planets[i], rc = D.rc[i];
+  const kc = ((ang / (2 * Math.PI)) * PROF_N + PROF_N) % PROF_N, hs = Math.max(0.5, hw / Math.max(1, p.r) * PROF_N / (2 * Math.PI)), cut = [];
+  for (let dk = -Math.ceil(hs); dk <= Math.ceil(hs); dk++) {
+    const k = ((Math.round(kc) + dk) % PROF_N + PROF_N) % PROF_N, off = (Math.round(kc) + dk - kc) / hs;
+    if (Math.abs(off) > 1) continue;
+    const old = h[k], nh = Math.max(rc, old - depth * (1 - off * off));
+    if (nh < old - 0.01) { cut.push([k, nh, old]); h[k] = nh; }
+  }
+  if (cut.length) debris(i, cut, 0, 0, 0, S);
+}
+// ===== Planètes coupées en deux, lave =====
+// Le noyau d'une planète est petit (10 %) : un astre qui la traverse assez vite la tranche le long de son passage. Chaque moitié
+// devient un astre à part entière (forme, masse, centre de gravité, vitesse) ; elles peuvent se séparer, se repercuter, refusionner.
+const SPLIT_V = 10;       // vitesse relative minimale pour trancher (en dessous : les deux astres fusionnent)
+const LAVA_TIME = 20;     // secondes pendant lesquelles une surface en fusion reste très mouvante après un choc
+const polyArea = q => { let a = 0; for (let k = 0; k < q.length; k++) { const [x0, y0] = q[k], [x1, y1] = q[(k + 1) % q.length]; a += x0 * y1 - x1 * y0; } return a / 2; };
+function polyCentroid(q) { let a = 0, cx = 0, cy = 0; for (let k = 0; k < q.length; k++) { const [x0, y0] = q[k], [x1, y1] = q[(k + 1) % q.length], f = x0 * y1 - x1 * y0; a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f; } return [cx / (3 * a), cy / (3 * a)]; }
+function clipHalf(q, px, py, nx, ny, off) { // garde la partie où (P − p)·n ≥ off
+  const out = [];
+  for (let k = 0; k < q.length; k++) {
+    const A = q[k], Bq = q[(k + 1) % q.length], da = (A[0] - px) * nx + (A[1] - py) * ny - off, db = (Bq[0] - px) * nx + (Bq[1] - py) * ny - off;
+    if (da >= 0) out.push(A);
+    if ((da >= 0) !== (db >= 0)) { const t = da / (da - db); out.push([A[0] + (Bq[0] - A[0]) * t, A[1] + (Bq[1] - A[1]) * t]); }
+  }
+  return out;
+}
+const inPoly = (q, x, y) => { let c = false; for (let k = 0, j = q.length - 1; k < q.length; j = k++) { const [xi, yi] = q[k], [xj, yj] = q[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+function radialProfile(q, cx, cy) { // rayon de la forme dans chaque direction, vu depuis son centre
+  return Array.from({ length: PROF_N }, (_, k) => {
+    const a = k / PROF_N * Math.PI * 2, dx = Math.cos(a), dy = Math.sin(a); let tm = 1;
+    for (let e = 0; e < q.length; e++) {
+      const [x0, y0] = q[e], [x1, y1] = q[(e + 1) % q.length], ex = x1 - x0, ey = y1 - y0, den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-9) continue;
+      const t = ((x0 - cx) * ey - (y0 - cy) * ex) / den, u = ((x0 - cx) * dy - (y0 - cy) * dx) / den;
+      if (t > 0 && u >= 0 && u <= 1) tm = Math.max(tm, t);
+    }
+    return tm;
+  });
+}
+// la planète i est tranchée par l'astre j qui la traverse : deux morceaux de part et d'autre de son passage
+function splitPlanet(i, j, A, Bj) {
+  const D = L._dyn, p = L.planets[i], h = D.h[i];
+  let tx = Bj.vx - A.vx, ty = Bj.vy - A.vy, vl = hyp(tx, ty);
+  if (vl < 1) { tx = A.x - Bj.x; ty = A.y - Bj.y; vl = hyp(tx, ty) || 1; }
+  tx /= vl; ty /= vl;
+  const nx = -ty, ny = tx, w = (movable(j) ? (D.rc[j] ?? L.planets[j].r * coreK(j)) : Bj.r) * 0.8 + 2; // demi-largeur de la tranchée
+  const poly = h.map((r, k) => { const a = k / PROF_N * Math.PI * 2; return [A.x + Math.cos(a) * r, A.y + Math.sin(a) * r]; });
+  const tot = Math.abs(polyArea(poly));
+  const parts = [1, -1].map(sg => ({ sg, q: clipHalf(poly, Bj.x, Bj.y, nx * sg, ny * sg, w) })).filter(f => f.q.length >= 3).map(f => ({ ...f, a: Math.abs(polyArea(f.q)) })).filter(f => f.a > tot * 0.06);
+  if (parts.length < 2) return false;
+  // la tranchée elle-même part en éclats et en magma
+  const cut = [];
+  for (let k = 0; k < PROF_N; k++) { const a = k / PROF_N * Math.PI * 2, px = A.x + Math.cos(a) * h[k] * 0.5, py = A.y + Math.sin(a) * h[k] * 0.5; if (Math.abs((px - Bj.x) * nx + (py - Bj.y) * ny) < w * 1.5) cut.push([k, D.rc[i], h[k]]); }
+  debris(i, cut, Bj.vx, Bj.vy, vl + 30);
+  const st0 = freeBody(i), m0 = D.m[i] ?? bodyMass(p), sumA = parts.reduce((s2, f) => s2 + f.a, 0), sep = 8 + vl * 0.3;
+  let best = -1, bestA = 0;
+  for (const f of parts) {
+    const [cx, cy] = polyCentroid(f.q), hh = radialProfile(f.q, cx, cy), rmax = Math.max(...hh), core = inPoly(f.q, A.x, A.y);
+    const np = { type: p.type, x: Math.round(cx), y: Math.round(cy), r: Math.max(4, Math.round(rmax)), frag: true, loose: true, ring: false }; // les anneaux restent à l'astre d'origine (ils disparaissent avec lui)
+    for (const k of ['g', 'tint', 'shade', 'axis', 'name']) if (p[k] !== undefined) np[k] = p[k];
+    const n = L.planets.push(np) - 1, mf = m0 * f.a / sumA, rc = core ? D.rc[i] : 1;
+    D.h[n] = hh.map(v => Math.max(rc, v)); D.rc[n] = rc; D.rmax[n] = Math.max(rc, rmax); D.m[n] = mf;
+    const share = 1 - f.a / sumA; // les deux moitiés s'écartent, la plus légère plus vite
+    D.st[n] = { x: cx, y: cy, vx: st0.vx + nx * f.sg * sep * share * 2, vy: st0.vy + ny * f.sg * sep * share * 2, t: wt };
+    D.heat = D.heat || {}; D.heat[n] = { lx: 0, ly: 0, t0: wt - 100 }; // entièrement en fusion
+    (D.lava = D.lava || {})[n] = 1; (D.hv = D.hv || {})[n] = new Array(PROF_N).fill(0);
+    textures[n] = paintBody(np, np.r * scale * dpr, lvl * 97 + n * 13 + 7); bodyRGB[n] = bodyColor(i);
+    if (f.a > bestA) { bestA = f.a; best = n; }
+  }
+  if (hasRings(p)) { // ses anneaux se défont en poussière
+    const f = ringForm(p), c = Math.cos(f.tilt), sn = Math.sin(f.tilt), rgb = ringColor(p).match(/\w\w/g).map(x => parseInt(x, 16)).join(',');
+    for (let n = 0; n < 400; n++) {
+      const bd = f.bands[Math.floor(Math.random() * f.bands.length)], rr = (bd[2] + Math.random() * (bd[3] - bd[2])) * p.r, a = Math.random() * Math.PI * 2;
+      const lx = rr * Math.cos(a), ly = rr * Math.sin(a) * f.flat, x = A.x + lx * c - ly * sn, y = A.y + lx * sn + ly * c, v = 5 + Math.random() * 20, va = Math.random() * Math.PI * 2;
+      particles.push({ x, y, vx: st0.vx + Math.cos(va) * v, vy: st0.vy + Math.sin(va) * v, life: Infinity, max: 1, rgb, sz: 0.8, grav: true, slide: true });
+    }
+  }
+  freeChildren(i); releaseBelt(i, st0);
+  D.gone[i] = true; D.alias[i] = best; delete D.st[i];
+  flashes.push({ x: Bj.x, y: Bj.y, r: 80 + p.r * 1.6, t0: performance.now(), rgb: '255,210,150', dur: 1300, ring: true });
+  return true;
+}
+// lave : sur une planète en fusion, la surface ondule et des vagues courent autour après chaque choc (puis elle se calme)
+function lavaStep(i, dt) {
+  const D = L._dyn, lv = (D.lava || {})[i]; if (!lv) return;
+  const h = D.h[i], hv = D.hv[i], rc = D.rc[i], c2 = 7 * lv, dmp = 1.5;
+  for (let k = 0; k < PROF_N; k++) hv[k] += (c2 * (h[(k + PROF_N - 1) % PROF_N] + h[(k + 1) % PROF_N] - 2 * h[k]) - dmp * hv[k]) * dt;
+  const top = L.planets[i].r * 1.12; // la lave ne déborde pas de plus de 12 %
+  for (let k = 0; k < PROF_N; k++) { hv[k] = Math.max(-25, Math.min(25, hv[k])); h[k] = Math.max(rc, Math.min(top, h[k] + hv[k] * dt)); }
+  D.lava[i] = Math.max(0, lv - dt / LAVA_TIME);
+}
+// choc sur une surface en fusion : la lave est repoussée en bourrelets de part et d'autre (vagues)
+function lavaKick(i, cut) {
+  const D = L._dyn; if (!magmaK(i) || heatOf(i) < 0.3) return;
+  (D.lava = D.lava || {})[i] = 1; const hv = (D.hv = D.hv || {})[i] || (D.hv[i] = new Array(PROF_N).fill(0));
+  for (const [k, nh, old] of cut) for (const dk of [-5, -4, -3, -2, 2, 3, 4, 5]) hv[(k + dk + PROF_N) % PROF_N] += Math.min(4, (old - nh) * 2) * (dk < 0 ? -dk : dk) / 5;
 }
 // épave intacte : vol libre sous la gravité, en tournant ; au premier contact avec un astre ou un caillou, elle se désagrège à son tour
 function moveWrecks(fdt) {
@@ -1495,15 +2114,16 @@ function moveWrecks(fdt) {
     const c = Math.cos(w.ang), s = Math.sin(w.ang), rk = beltRockAt(w.x, w.y, w.rc);
     let hb = null, hx = 0, hy = 0;
     for (const b of rk ? [...B, rk] : B) {
-      if (hyp(w.x - b.x, w.y - b.y) > b.r + w.rc) continue;
-      for (const [lx, ly] of w.pix) { const x = w.x + lx * c - ly * s, y = w.y + lx * s + ly * c; if (hyp(x - b.x, y - b.y) < b.r) { hb = b; hx = x; hy = y; break; } }
+      if (b.gone || hyp(w.x - b.x, w.y - b.y) > b.r + w.rc) continue;
+      for (const [lx, ly] of w.pix) { const x = w.x + lx * c - ly * s, y = w.y + lx * s + ly * c; if (hyp(x - b.x, y - b.y) < surfR(b, x - b.x, y - b.y) - 0.3) { hb = b; hx = x; hy = y; break; } }
       if (hb) break;
     }
     if (!hb) continue;
     const d = hyp(hx - hb.x, hy - hb.y) || 1, nx = (hx - hb.x) / d, ny = (hy - hb.y) / d;
     const pts = w.pix.map(([lx, ly, col]) => { const rx = lx * c - ly * s, ry = lx * s + ly * c; return { x: w.x + rx, y: w.y + ry, vx: w.vx - w.w * ry, vy: w.vy + w.w * rx, col }; });
     const star = !!hb.star, body = hb === rk ? rgbOf(rk.c) : bodyColor(hb.i);
-    shatter(pts, { x: hb.x, y: hb.y, r: hb.r, vx: hb.vx, vy: hb.vy }, star, body, w.sz, hb.x + nx * hb.r, hb.y + ny * hb.r, nx, ny, Math.round(110 * pts.length / shipPixelsOf(shipKind).length));
+    const sr = surfR(hb, nx, ny);
+    shatter(pts, { x: hb.x, y: hb.y, r: sr, vx: hb.vx, vy: hb.vy }, star, body, w.sz, hb.x + nx * sr, hb.y + ny * sr, nx, ny, w.body ? 0 : Math.round(110 * pts.length / shipPixelsOf(shipKind).length));
     w.dead = true;
   }
   wrecks = wrecks.filter(w => !w.dead && w.x > -2000 && w.x < WORLD_W + 2000 && w.y > -2000 && w.y < worldH(L) + 2000);
@@ -1732,6 +2352,7 @@ function draw() {
 
   drawBelts(B, t);
   B.forEach(b => drawBody(B, b));
+
   drawShadows(B);
   // numéros des objectifs « se poser » et « faire le tour » sur les astres concernés (avant le lancement)
   const ba = badgeAlpha();
@@ -1782,9 +2403,10 @@ function draw() {
   if (pred && !simFlight) drawCoast(pred, true);
 
   // pixels opaques (épave, poussière posée) regroupés par couleur : un seul remplissage par couleur au lieu d'un par pixel
-  const opaque = new Map(), put = (fs, x, y, w) => { let a = opaque.get(fs); if (!a) opaque.set(fs, a = []); a.push(x, y, w); };
+  const opaque = new Map(), put = (fs, x, y, w) => { let a = opaque.get(fs); if (!a) opaque.set(fs, a = []); a.push(x, y, w); }, blobs = [];
   for (const q of particles) {
     const al = Math.max(0, Math.min(1, q.life / q.max)), qs = (q.sz || (q.rgb ? 2 : 1.2)) / scale; // poussière d'anneaux un peu plus grosse ; coups de redressement plus fins
+    if (q.magma !== undefined) { blobs.push(q); continue; }
     if (al >= 1) { if (q.fsr !== q.rgb || !q.fs) { q.fsr = q.rgb; q.fs = `rgb(${q.rgb || '255,255,255'})`; } put(q.fs, q.x - qs, q.y - qs, qs * 2); continue; }
     ctx.fillStyle = `rgba(${q.rgb || '255,255,255'},${al})`;
     ctx.fillRect(q.x - qs, q.y - qs, qs * 2, qs * 2);
@@ -1794,11 +2416,19 @@ function draw() {
     for (const p of w.pix) { if (!p[3]) p[3] = `rgb(${p[2]})`; put(p[3], w.x + p[0] * c - p[1] * s - qs, w.y + p[0] * s + p[1] * c - qs, qs * 2); }
   }
   for (const [fs, a] of opaque) { ctx.fillStyle = fs; ctx.beginPath(); for (let i = 0; i < a.length; i += 3) ctx.rect(a[i], a[i + 1], a[i + 2], a[i + 2]); ctx.fill(); }
-  flashes = flashes.filter(f => performance.now() - f.t0 < 260);
-  for (const f of flashes) { // éclair d'impact : très bref, puis la simulation continue
-    const a = 1 - (performance.now() - f.t0) / 260, g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (1 + (1 - a) * 0.6));
+  drawBigBlobs(); drawFlyRocks();
+  if (blobs.length) { // bulles de magma : un halo tant qu'elles sont chaudes, puis une goutte sombre
+    ctx.globalCompositeOperation = 'lighter';
+    for (const q of blobs) { const hot = 1 - q.magma; if (hot < 0.05) continue; const r = q.sz / scale * (2.2 + hot); ctx.fillStyle = `rgba(255,${90 + 80 * hot | 0},20,${0.22 * hot})`; ctx.beginPath(); ctx.arc(q.x, q.y, r, 0, Math.PI * 2); ctx.fill(); }
+    ctx.globalCompositeOperation = 'source-over';
+    for (const q of blobs) { ctx.fillStyle = `rgb(${q.rgb})`; ctx.beginPath(); ctx.arc(q.x, q.y, q.sz / scale, 0, Math.PI * 2); ctx.fill(); }
+  }
+  flashes = flashes.filter(f => performance.now() - f.t0 < (f.dur || 260));
+  for (const f of flashes) { // éclair d'impact : très bref, puis la simulation continue (chocs entre astres : plus long, avec une onde)
+    const a = 1 - (performance.now() - f.t0) / (f.dur || 260), g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * (1 + (1 - a) * 0.6));
     g.addColorStop(0, `rgba(${f.rgb},${0.95 * a})`); g.addColorStop(0.35, `rgba(${f.rgb},${0.45 * a})`); g.addColorStop(1, `rgba(${f.rgb},0)`);
     ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * 1.6, 0, Math.PI * 2); ctx.fill();
+    if (f.ring) { const rr = f.r * (0.3 + (1 - a) * 2.6); ctx.strokeStyle = `rgba(${f.rgb},${0.45 * a * a})`; ctx.lineWidth = (1.5 + 4 * a) / scale; ctx.beginPath(); ctx.arc(f.x, f.y, rr, 0, Math.PI * 2); ctx.stroke(); }
   }
 
   if (!ship.dead) drawRocket(ship.x, ship.y, ship.ang, Math.max(1, 1.15 / scale), shipDarkness(B, ship.x, ship.y));
@@ -2096,16 +2726,16 @@ function loop(now) {
   if (n === 6) acc = 0;
   stateT += fdt;
   if ((screen === 'game') !== wakeWant) keepAwake(screen === 'game');
-  moveWrecks(fdt);
+  moveWrecks(fdt); moveBigBlobs(fdt); moveFlyRocks(fdt);
   for (const q of particles) {
     if (q.wait > 0) { q.wait -= fdt; continue; } // pixel encore accroché à l'épave : il part quand l'onde de choc l'atteint
     if (!q.grav && !q.rgb && B && screen === 'game') { // gaz du réacteur : il s'écrase sur l'astre et file le long de sa surface (décollage, atterrissage)
       for (const b of B) {
         if (b.star) continue;
-        const dx = q.x - b.x, dy = q.y - b.y, d2 = dx * dx + dy * dy;
-        if (d2 >= b.r * b.r) continue;
+        const dx = q.x - b.x, dy = q.y - b.y, d2 = dx * dx + dy * dy, br = b.h ? surfR(b, dx, dy) : b.r;
+        if (d2 >= br * br) continue;
         const d = Math.sqrt(d2) || 1, nx = dx / d, ny = dy / d, rvx = q.vx - b.vx, rvy = q.vy - b.vy, vn = rvx * nx + rvy * ny;
-        q.x = b.x + nx * b.r; q.y = b.y + ny * b.r;
+        q.x = b.x + nx * br; q.y = b.y + ny * br;
         if (vn < 0) { const tx = rvx - vn * nx, ty = rvy - vn * ny, k = 1 + 0.6 * Math.min(1, -vn / 120); q.vx = b.vx + tx * k - vn * nx * 0.12; q.vy = b.vy + ty * k - vn * ny * 0.12; }
         q.rgb = bodyColor(b.i); q.dust = true; q.life = Math.max(q.life, 0.35 + Math.random() * 0.35); q.max = 0.7;
         break;
@@ -2113,23 +2743,31 @@ function loop(now) {
     }
     if (q.dust && B) { q.vx *= 1 - Math.min(1, 2.2 * fdt); q.vy *= 1 - Math.min(1, 2.2 * fdt); } // la poussière soulevée ralentit vite
     if (q.grav && B) { // débris d'anneaux : gravité des astres, et ils s'écrasent à leur surface
-      const [ax, ay] = gravity(B, q.x, q.y); q.vx += ax * fdt; q.vy += ay * fdt;
+      let [ax, ay] = gravity(B, q.x, q.y);
+      if (q.free !== undefined && B[q.free]) { const o = B[q.free], dx = o.x - q.x, dy = o.y - q.y, d2 = Math.max(1, dx * dx + dy * dy), g = o.m / (d2 * Math.sqrt(d2)); ax -= g * dx; ay -= g * dy; }
+      q.vx += ax * fdt; q.vy += ay * fdt;
+      if (bigBlobs.length) { const [bx, by] = blobGravity(q.x, q.y); q.vx += bx * fdt; q.vy += by * fdt; } // mini gravité des grosses bulles
       const rk = q.slide ? beltRockAt(q.x, q.y) : null; // les débris rebondissent et glissent aussi sur les cailloux des ceintures
-      for (const b of rk ? [rk] : B) {
-        const dx = q.x - b.x, dy = q.y - b.y, d2 = dx * dx + dy * dy;
-        if (d2 >= b.r * b.r) continue;
+      for (const b of rk ? [rk] : bigBlobs.length ? B.concat(bigBlobs) : B) {
+        if (q.free !== undefined && b.i === q.free) continue;
+        const dx = q.x - b.x, dy = q.y - b.y, d2 = dx * dx + dy * dy, br = b.h ? surfR(b, dx, dy) : b.r;
+        if (d2 >= br * br) continue;
         if (!q.slide || b.star) { q.life = 0; break; }
         // morceau du vaisseau : il se pose et glisse sur la surface (petit rebond, frottement)
         const d = Math.sqrt(d2) || 1, nx = dx / d, ny = dy / d, rvx = q.vx - b.vx, rvy = q.vy - b.vy, vn = rvx * nx + rvy * ny;
-        q.x = b.x + nx * b.r; q.y = b.y + ny * b.r;
+        q.x = b.x + nx * br; q.y = b.y + ny * br;
         if (vn < 0) { const tx = rvx - vn * nx, ty = rvy - vn * ny, f = Math.max(0, 1 - 1.1 * fdt); q.vx = b.vx + tx * f - vn * nx * 0.08; q.vy = b.vy + ty * f - vn * ny * 0.08; } // frottement léger : ça glisse loin
         break;
       }
     }
+    if (q.magma !== undefined && q.magma < 1) { // bulle de magma : elle refroidit en quelques secondes (orange vif → croûte sombre)
+      q.magma = Math.min(1, q.magma + fdt / 7); const u = q.magma * (MAGMA_RGB.length - 1), k = Math.min(MAGMA_RGB.length - 2, Math.floor(u)), f = u - k;
+      q.rgb = MAGMA_RGB[k].map((c, m) => Math.round(c + (MAGMA_RGB[k + 1][m] - c) * f)).join(',');
+    }
     q.x += q.vx * fdt; q.y += q.vy * fdt; q.life -= fdt;
   }
   particles = particles.filter(q => q.life > 0 && (!q.slide || (q.x > -2000 && q.x < WORLD_W + 2000 && q.y > -2000 && q.y < worldH(L) + 2000))); // l'épave partie très loin est oubliée
-  if (particles.length > 2500) particles = particles.slice(particles.length - 2500); // plafond (les plus anciens partent)
+  if (particles.length > 5000) particles = particles.slice(particles.length - 5000); // plafond (les plus anciens partent)
   draw();
   requestAnimationFrame(loop);
 }
@@ -2138,6 +2776,10 @@ addEventListener('resize', resize);
 resize(); loadLevel(lvl);
 requestAnimationFrame(loop);
 
+// appui long : ni sélection de texte ni menu contextuel (sauf champs de saisie et code de sauvegarde)
+const selOk = t => t && t.closest && (t.closest('input,textarea') || /all|text/.test(getComputedStyle(t.nodeType === 1 ? t : t.parentElement).userSelect || ''));
+document.addEventListener('selectstart', e => { if (!selOk(e.target)) e.preventDefault(); });
+document.addEventListener('contextmenu', e => { if (!selOk(e.target)) e.preventDefault(); });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   // mise à jour automatique : à chaque ouverture (et retour dans l'appli), on demande la dernière version au serveur ;
   // si elle existe, elle s'installe et s'active aussitôt, puis la page se recharge (en partie ou dans l'éditeur : dès le retour à l'accueil ou à la liste des niveaux)

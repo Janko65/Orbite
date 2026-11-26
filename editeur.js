@@ -137,6 +137,7 @@ function closeEditor() {
 // retour depuis un test
 function backToEditor() {
   testMode = false; recMode = null; testRec = null; testRuns = null; cancelJobs();
+  stripFrags(L); // morceaux de planète nés pendant l'essai
   screen = 'editor';
   for (const id of ['edTop', 'edPanel', 'edCenter']) document.getElementById(id).style.display = '';
   selectLevel(ED.cur);
@@ -204,10 +205,22 @@ function buildUI() {
   const tool = (ic, t, f, cls = '') => el('button', { class: cls, onclick: f }, el('b', {}, ic), t);
   const center = el('div', { id: 'edCenter', class: 'ed' },
     tool('⤢', 'Cadrer', () => { ED.view = null; editorLayout(); buildTextures(); }),
+    tool('☄', 'Tout détacher', toggleAllLoose, 'edLoose'),
     tool('🎲', 'Hasard', rerollLevel),
     tool('▶', 'Tester', () => testLevel(), 'pri'));
   document.body.append(top, panel, center);
-  editorLayout();
+  editorLayout(); syncLooseBtn();
+}
+// tout le niveau détachable (ou tout fixe à nouveau) : chaque astre sauf les étoiles
+const allLoose = Lv => Lv.planets.some(p => !p.star) && Lv.planets.every(p => p.star || p.loose);
+function syncLooseBtn() {
+  const b = document.querySelector('#edCenter .edLoose'); if (!b) return;
+  b.lastChild.textContent = allLoose(EL()) ? 'Tout fixer' : 'Tout détacher';
+}
+function toggleAllLoose() {
+  const Lv = EL(), on = !allLoose(Lv);
+  Lv.planets.forEach(p => { if (p.star) return; if (on) p.loose = true; else delete p.loose; });
+  Lv.dirty = true; saveDraft(); renderPanel();
 }
 
 function refreshLevelSelect() {
@@ -218,6 +231,7 @@ function refreshLevelSelect() {
 }
 
 function renderPanel() {
+  syncLooseBtn();
   const tabs = document.getElementById('edTabs'), body = document.getElementById('edBody');
   if (!tabs) return;
   tabs.innerHTML = '';
@@ -299,6 +313,10 @@ function panelBody(body) {
       body.append(slider('Largeur', 10, 160, 1, belt.w, v => `${v} m`, v => { belt.w = v; changed(false); }));
     }
   }
+  // astre détachable : les impacts du vaisseau le poussent hors de son orbite et l'abîment ; il peut percuter d'autres astres
+  if (!p.star) body.append(el('div', { class: 'row' }, el('label', {}, 'Détachable'),
+    el('input', { type: 'checkbox', checked: !!p.loose, onchange: e => { if (e.target.checked) p.loose = true; else delete p.loose; changed(false); renderPanel(); } }),
+    el('span', { class: 'hint' }, 'les impacts le déplacent et l’arrachent en éclats')));
   // n'importe quel astre peut tourner autour de n'importe quel autre (étoiles comprises), sauf le départ et sans boucle
   const parents = Lv.planets.map((q, i) => i).filter(i => i !== sel && !isUnder(Lv, i, sel));
   if (sel !== Lv.start.p && parents.length) body.append(el('div', { class: 'row' }, el('label', {}, 'En orbite'),
