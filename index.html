@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 91; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 93; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -1645,7 +1645,9 @@ function carve(i, cx, cy, R, ivx, ivy, power) {
   for (let k = 0; k < PROF_N; k++) {
     const a = k / PROF_N * Math.PI * 2, proj = ux * Math.cos(a) + uy * Math.sin(a), perp2 = u2 - proj * proj;
     if (proj <= 0 || perp2 >= R * R) continue;
-    const t1 = proj - Math.sqrt(R * R - perp2), old = h[k], nh = Math.max(rc, t1);
+    const sq = Math.sqrt(R * R - perp2), t1 = proj - sq, t2 = proj + sq, old = h[k];
+    if (t2 < old - 1) continue; // l'astre est entièrement sous la surface dans cette direction : la matière se referme derrière lui (pas de calotte arrachée)
+    const nh = Math.max(rc, t1);
     if (nh < old - 0.01) { cut.push([k, nh, old]); h[k] = nh; }
   }
   return debris(i, cut, ivx, ivy, power);
@@ -1656,6 +1658,7 @@ function debris(i, cut, ivx, ivy, power, aim) {
   if (!cut.length) return 0;
   lavaKick(i, cut);
   const D = L._dyn, h = D.h[i], p = L.planets[i], b = bodyNow(i), rm = p.r * magmaK(i), dth = 2 * Math.PI / PROF_N;
+  massOf(i); // la matière arrachée n'appartient plus à l'astre : sa masse (et sa gravité) diminue d'autant
   D.rmax[i] = Math.max(D.rc[i], ...h);
   let area = 0; for (const [, nh, old] of cut) area += (old * old - nh * nh) / 2 * dth;
   const cell = Math.max(1.3, p.r / 70, Math.sqrt(area / 700)), sz = Math.max(0.5, cell * scale * 0.5);
@@ -1703,7 +1706,7 @@ function stepDyn(dt) {
     const n = SUB, h = dt / n;
     for (let s = 0; s < n; s++) {
       const t = wt + s * h, Bt = snapshot(L, t);
-      const acc = ids.map(i => { const q = Bt[i]; let ax = 0, ay = 0; for (const o of Bt) { if (o.i === i || o.gone || !o.m) continue; const dx = o.x - q.x, dy = o.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 1 || d2 < (q.r + o.r) ** 2) continue; /* deux astres qui se traversent ne s'attirent plus : l'un passe à travers l'autre en ligne droite, sans s'enrouler */ const g = o.m / (d2 * Math.sqrt(d2)); ax += g * dx; ay += g * dy; } return [ax, ay]; });
+      const acc = ids.map(i => { const q = Bt[i]; let ax = 0, ay = 0; for (const o of Bt) { if (o.i === i || o.gone || !o.m) continue; const dx = o.x - q.x, dy = o.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 1) continue; const Rs = q.r + o.r, g = d2 < Rs * Rs ? o.m / (Rs * Rs * Rs) : o.m / (d2 * Math.sqrt(d2)); /* l'un dans l'autre : attraction douce, qui décroît vers le centre (pas d'emballement ni d'enroulement) */ ax += g * dx; ay += g * dy; } return [ax, ay]; });
       ids.forEach((i, k) => { const st = D.st[i]; st.x += st.vx * (t - st.t); st.y += st.vy * (t - st.t); st.t = t; st.vx += acc[k][0] * h; st.vy += acc[k][1] * h; });
     }
     for (const i of ids) { const st = D.st[i]; st.x += st.vx * (wt + dt - st.t); st.y += st.vy * (wt + dt - st.t); st.t = wt + dt; }
@@ -1738,6 +1741,7 @@ function stepDyn(dt) {
   for (const rp of D.ramp || []) { const u = Math.min(1, (wt + dt - rp.t0) / 2); D.m[rp.i] = rp.from + (rp.to - rp.from) * u * u * (3 - 2 * u); rp.done = u >= 1; }
   if (D.ramp) D.ramp = D.ramp.filter(rp => !rp.done);
   for (const k in D.lava || {}) if (!D.gone[k] && D.h[k]) lavaStep(+k, dt);
+  for (const k in D.h) if (!D.gone[k]) massOf(+k);
   // les formes creusées s'arrondissent peu à peu (liquéfaction très lente) : diffusion du rayon entre secteurs voisins
   for (const k in D.h) {
     if (D.gone[k]) continue;
@@ -1760,17 +1764,25 @@ function collideBodies(t, dt) {
     const a = Bt[i], b = Bt[j];
     if (a.gone || b.gone || (!D.st[i] && !D.st[j])) continue;
     const dx = b.x - a.x, dy = b.y - a.y, d = hyp(dx, dy) || 1, nx = dx / d, ny = dy / d;
-    if (d > a.r + b.r) continue;
+    if (d > a.r + b.r + 0.3 * Math.min(a.r, b.r)) continue;
     if (a.star || b.star) { // un astre tombé dans une étoile s'y consume
       const [S, P] = a.star ? [a, b] : [b, a];
       if (d < S.r + surfR(P, S.x - P.x, S.y - P.y)) burnBody(P.i, S); // au contact
       continue;
     }
     const sa = surfR(a, dx, dy), sb = surfR(b, -dx, -dy), ov = sa + sb - d;
-    if (ov <= 0) continue;
-    const key = i + ':' + j; D.touch = D.touch || {};
+    if (ov <= 0) { // deux blocs de magma presque collés, lents, depuis plus de 4 s : ils se rejoignent
+      const nk = 'n' + i + ':' + j; D.near = D.near || {};
+      if (magmaK(i) && magmaK(j) && ov > -0.3 * Math.min(sa, sb) && hyp(a.vx - b.vx, a.vy - b.vy) < 20) D.near[nk] = (D.near[nk] || 0) + dt; else delete D.near[nk];
+      if (D.near[nk] > 4) { delete D.near[nk]; mergeBodies(i, j); }
+      continue;
+    }
+    const key = i + ':' + j; D.touch = D.touch || {}; D.stuck = D.stuck || {};
+    // restés emboîtés plus de 3 s sans vraiment se séparer : ils finissent par se fondre l'un dans l'autre
+    if (hyp(a.vx - b.vx, a.vy - b.vy) < 20) D.stuck[key] = (D.stuck[key] || 0) + dt; else D.stuck[key] = Math.max(0, (D.stuck[key] || 0) - dt);
+    if (D.stuck[key] > 3) { delete D.stuck[key]; mergeBodies(i, j); continue; }
     if (!D.touch[key]) { // premier contact : gros éclair et onde de choc
-      D.touch[key] = true;
+      D.touch[key] = { v: hyp(a.vx - b.vx, a.vy - b.vy), mi: massOf(i), mj: massOf(j) }; // vitesse et masses au moment du choc (pour savoir s'il peut briser l'astre)
       const cx = a.x + nx * sa, cy = a.y + ny * sa, rv0 = hyp(a.vx - b.vx, a.vy - b.vy), R = Math.min(a.r, b.r) * 2.2 + rv0 * 0.8;
       flashes.push({ x: cx, y: cy, r: R, t0: performance.now(), rgb: '255,236,200', dur: 900, ring: true });
       flashes.push({ x: cx, y: cy, r: R * 0.5, t0: performance.now(), rgb: '255,255,255', dur: 350 });
@@ -1782,11 +1794,18 @@ function collideBodies(t, dt) {
     const rcA = D.rc[i] ?? L.planets[i].r * coreK(i), rcB = D.rc[j] ?? L.planets[j].r * coreK(j);
     const la = movable(i), lb = movable(j), ra = la ? rcA : a.r, rb = lb ? rcB : b.r; // un astre fixe est dur jusqu'à sa surface
     const rv0 = hyp(a.vx - b.vx, a.vy - b.vy), liquid = magmaK(i) && magmaK(j) && heatOf(i) > 0.3 && heatOf(j) > 0.3;
+    { // choc violent, même décentré : si l'impacteur s'enfonce profondément avec assez d'énergie, la planète se brise le long de sa trajectoire
+      const ma = D.m[i] ?? bodyMass(L.planets[i]), mb = D.m[j] ?? bodyMass(L.planets[j]);
+      const [P, Q, PB, QB] = ma >= mb ? [i, j, a, b] : [j, i, b, a];
+      const fresh = L.planets[P].frag && wt - (D.born || {})[P] < 6;
+      if (d < 0.55 * L.planets[P].r && !fresh && !(liquid && rv0 < 25) && rv0 >= SPLIT_V && magmaK(P) && movable(P) && splitEnergy(P, Q, rv0, D.touch[i + ':' + j], P === i) && splitPlanet(P, Q, PB, QB)) continue;
+    }
     if (d < ra + rb || (liquid && rv0 < 25 && d < 0.5 * (sa + sb))) {
       // un astre qui traverse une planète assez vite la tranche en deux ; sinon les deux fusionnent (deux masses de lave lentes se mêlent)
       const ma = D.m[i] ?? bodyMass(L.planets[i]), mb = D.m[j] ?? bodyMass(L.planets[j]);
       const [P, Q, PB, QB] = ma >= mb ? [i, j, a, b] : [j, i, b, a];
-      if (!liquid && rv0 >= SPLIT_V && magmaK(P) && movable(P) && splitPlanet(P, Q, PB, QB)) continue;
+      const fresh = L.planets[P].frag && wt - (D.born || {})[P] < 6; // un morceau tout juste né ne se recoupe pas aussitôt
+      if (!(liquid && rv0 < 25) && !fresh && rv0 >= SPLIT_V && magmaK(P) && movable(P) && splitEnergy(P, Q, rv0, D.touch[i + ':' + j], P === i) && splitPlanet(P, Q, PB, QB)) continue;
       mergeBodies(i, j); continue;
     }
     // les croûtes s'écrasent : chacune perd ce qui dépasse dans l'autre (seulement les astres détachables), partage selon la masse
@@ -1799,7 +1818,15 @@ function collideBodies(t, dt) {
     if (dA > avA) { dB = Math.min(avB, dB + dA - avA); dA = avA; }
     if (la && dA > 0) carve(i, b.x, b.y, sb - dB + 0.3, b.vx, b.vy, rv);
     if (lb && dB > 0) carve(j, a.x, a.y, sa - dA + 0.3, a.vx, a.vy, rv);
-    // pas de freinage ni de déviation : l'astre traverse l'autre en gardant sa trajectoire (la croûte et le magma s'arrachent sur son passage)
+    // freinage dans la matière : la vitesse relative diminue (d'autant plus que l'astre est enfoncé), toujours dans l'axe du mouvement :
+    // l'astre ralentit sans être dévié ni s'enrouler ; la quantité de mouvement passe à l'astre percuté
+    {
+      const ma = la ? (D.m[i] ?? bodyMass(L.planets[i])) : Infinity, mb = lb ? (D.m[j] ?? bodyMass(L.planets[j])) : Infinity;
+      const rvx = b.vx - a.vx, rvy = b.vy - a.vy, f = Math.min(1, ov / (2 * Math.max(1, Math.min(sa, sb)))), k = 1 - Math.exp(-4 * f * dt);
+      const wa = !la ? 0 : !lb ? 1 : mb / (ma + mb); // part du changement prise par A
+      if (la) { const st = freeBody(i); st.vx += rvx * k * wa; st.vy += rvy * k * wa; }
+      if (lb) { const st = freeBody(j); st.vx -= rvx * k * (1 - wa); st.vy -= rvy * k * (1 - wa); }
+    }
   }
 }
 // deux noyaux se touchent : fusion lente (le plus lourd, ou l'astre fixe, absorbe l'autre)
@@ -1827,6 +1854,11 @@ function mergeBodies(i, j) {
   }
   freeChildren(b); releaseBelt(b, freeBody(b));
   if (heatOf(a) >= 0.5) { const dx = Bb.x - A.x, dy = Bb.y - A.y, dd = hyp(dx, dy) || 1, sr = surfR(A, dx, dy); spawnBigBlobs(a, A.x + dx / dd * sr, A.y + dy / dd * sr, dx / dd, dy / dd, hyp(A.vx - Bb.vx, A.vy - Bb.vy) + 40); }
+  D.madd = D.madd || {};
+  if (liquidM) { // lave : sa matière gonfle la survivante (surface ajoutée) ; la masse totale est conservée
+    const ar = q => q.reduce((s2, r) => s2 + r * r, 0) * Math.PI / PROF_N, dA = (D.dens || {})[a] ?? bodyMass(L.planets[a]) / (Math.PI * L.planets[a].r ** 2);
+    D.madd[a] = ma + mb - dA * (ar(D.h[a]) + ar(D.h[b]));
+  } else D.madd[a] = (D.madd[a] || 0) + mb; // son noyau (et ce qui reste) s'ajoute
   D.m[a] = ma + mb; D.gone[b] = true; D.alias[b] = a; delete D.st[b];
   (D.merges = D.merges || []).push({ a, b, t0: wt, p: 0, e: 0, S, rcA: D.rc[a], rcB, off: [Bb.x - A.x - S[0], Bb.y - A.y - S[1]], core: isMoonBody(b), grow, h0: D.h[a].slice() });
   if (liquidM) { (D.lava = D.lava || {})[a] = 1; (D.hv = D.hv || {})[a] = D.hv[a] || new Array(PROF_N).fill(0); }
@@ -2015,7 +2047,7 @@ function stripSide(i, ang, depth, hw, S) {
 // ===== Planètes coupées en deux, lave =====
 // Le noyau d'une planète est petit (10 %) : un astre qui la traverse assez vite la tranche le long de son passage. Chaque moitié
 // devient un astre à part entière (forme, masse, centre de gravité, vitesse) ; elles peuvent se séparer, se repercuter, refusionner.
-const SPLIT_V = 10;       // vitesse relative minimale pour trancher (en dessous : les deux astres fusionnent)
+const SPLIT_V = 20;       // vitesse relative minimale pour trancher (en dessous : les deux astres fusionnent)
 const LAVA_TIME = 20;     // secondes pendant lesquelles une surface en fusion reste très mouvante après un choc
 const polyArea = q => { let a = 0; for (let k = 0; k < q.length; k++) { const [x0, y0] = q[k], [x1, y1] = q[(k + 1) % q.length]; a += x0 * y1 - x1 * y0; } return a / 2; };
 function polyCentroid(q) { let a = 0, cx = 0, cy = 0; for (let k = 0; k < q.length; k++) { const [x0, y0] = q[k], [x1, y1] = q[(k + 1) % q.length], f = x0 * y1 - x1 * y0; a += f; cx += (x0 + x1) * f; cy += (y0 + y1) * f; } return [cx / (3 * a), cy / (3 * a)]; }
@@ -2041,6 +2073,21 @@ function radialProfile(q, cx, cy) { // rayon de la forme dans chaque direction, 
     return tm;
   });
 }
+// masse d'un astre abîmé : densité × surface réelle (profil) + ce qu'il a absorbé (noyaux, astres fondus en lui)
+function massOf(i) {
+  const D = L._dyn, h = D.h[i], p = L.planets[i]; if (!h || p.star) return D.m[i] ?? bodyMass(p);
+  D.dens = D.dens || {}; const dn = D.dens[i] ?? (D.dens[i] = bodyMass(p) / (Math.PI * p.r * p.r));
+  let a = 0; for (const r of h) a += r * r; a *= Math.PI / PROF_N;
+  return (D.m[i] = Math.max(1, dn * a + ((D.madd || {})[i] || 0)));
+}
+// une planète ne se brise que si l'énergie du choc dépasse ce qui la tient (sa propre gravité) : énergie de l'impacteur
+// ½·m·v² comparée à ~0,3·M²/R (moins pour un astre déjà en fusion) ; sinon l'impacteur s'y enfonce et ils fusionnent
+function splitEnergy(P, Q, rv, hit, pFirst) {
+  const D = L._dyn; let mt = D.m[P] ?? bodyMass(L.planets[P]), mi = D.m[Q] ?? bodyMass(L.planets[Q]);
+  if (hit) { rv = Math.max(rv, hit.v); mt = pFirst ? hit.mi : hit.mj; mi = pFirst ? hit.mj : hit.mi; } // énergie et masses du premier contact
+  const Rt = L.planets[P].r;
+  return 0.5 * mi * rv * rv >= 0.3 * mt * mt / Rt * (heatOf(P) > 0.5 ? 0.6 : 1);
+}
 // la planète i est tranchée par l'astre j qui la traverse : deux morceaux de part et d'autre de son passage
 function splitPlanet(i, j, A, Bj) {
   const D = L._dyn, p = L.planets[i], h = D.h[i];
@@ -2063,10 +2110,10 @@ function splitPlanet(i, j, A, Bj) {
     const np = { type: p.type, x: Math.round(cx), y: Math.round(cy), r: Math.max(4, Math.round(rmax)), frag: true, loose: true, ring: false }; // les anneaux restent à l'astre d'origine (ils disparaissent avec lui)
     for (const k of ['g', 'tint', 'shade', 'axis', 'name']) if (p[k] !== undefined) np[k] = p[k];
     const n = L.planets.push(np) - 1, mf = m0 * f.a / sumA, rc = core ? D.rc[i] : 1;
-    D.h[n] = hh.map(v => Math.max(rc, v)); D.rc[n] = rc; D.rmax[n] = Math.max(rc, rmax); D.m[n] = mf;
+    D.h[n] = hh.map(v => Math.max(rc, v)); D.rc[n] = rc; D.rmax[n] = Math.max(rc, rmax); D.m[n] = mf; (D.dens = D.dens || {})[n] = D.dens[i] ?? bodyMass(p) / (Math.PI * p.r * p.r); (D.madd = D.madd || {})[n] = ((D.madd[i] || 0)) * f.a / sumA;
     const share = 1 - f.a / sumA; // les deux moitiés s'écartent, la plus légère plus vite
     D.st[n] = { x: cx, y: cy, vx: st0.vx + nx * f.sg * sep * share * 2, vy: st0.vy + ny * f.sg * sep * share * 2, t: wt };
-    D.heat = D.heat || {}; D.heat[n] = { lx: 0, ly: 0, t0: wt - 100 }; // entièrement en fusion
+    D.heat = D.heat || {}; D.heat[n] = { lx: 0, ly: 0, t0: wt - 100 }; (D.born = D.born || {})[n] = wt; // entièrement en fusion
     (D.lava = D.lava || {})[n] = 1; (D.hv = D.hv || {})[n] = new Array(PROF_N).fill(0);
     textures[n] = paintBody(np, np.r * scale * dpr, lvl * 97 + n * 13 + 7); bodyRGB[n] = bodyColor(i);
     if (f.a > bestA) { bestA = f.a; best = n; }
