@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 90; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 91; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -1703,7 +1703,7 @@ function stepDyn(dt) {
     const n = SUB, h = dt / n;
     for (let s = 0; s < n; s++) {
       const t = wt + s * h, Bt = snapshot(L, t);
-      const acc = ids.map(i => { const q = Bt[i]; let ax = 0, ay = 0; for (const o of Bt) { if (o.i === i || o.gone || !o.m) continue; const dx = o.x - q.x, dy = o.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 1) continue; const g = o.m / (d2 * Math.sqrt(d2)); ax += g * dx; ay += g * dy; } return [ax, ay]; });
+      const acc = ids.map(i => { const q = Bt[i]; let ax = 0, ay = 0; for (const o of Bt) { if (o.i === i || o.gone || !o.m) continue; const dx = o.x - q.x, dy = o.y - q.y, d2 = dx * dx + dy * dy; if (d2 < 1 || d2 < (q.r + o.r) ** 2) continue; /* deux astres qui se traversent ne s'attirent plus : l'un passe à travers l'autre en ligne droite, sans s'enrouler */ const g = o.m / (d2 * Math.sqrt(d2)); ax += g * dx; ay += g * dy; } return [ax, ay]; });
       ids.forEach((i, k) => { const st = D.st[i]; st.x += st.vx * (t - st.t); st.y += st.vy * (t - st.t); st.t = t; st.vx += acc[k][0] * h; st.vy += acc[k][1] * h; });
     }
     for (const i of ids) { const st = D.st[i]; st.x += st.vx * (wt + dt - st.t); st.y += st.vy * (wt + dt - st.t); st.t = wt + dt; }
@@ -1799,14 +1799,7 @@ function collideBodies(t, dt) {
     if (dA > avA) { dB = Math.min(avB, dB + dA - avA); dA = avA; }
     if (la && dA > 0) carve(i, b.x, b.y, sb - dB + 0.3, b.vx, b.vy, rv);
     if (lb && dB > 0) carve(j, a.x, a.y, sa - dA + 0.3, a.vx, a.vy, rv);
-    // choc mou : la croûte absorbe une partie du rapprochement
-    const ma = la ? (D.m[i] ?? bodyMass(L.planets[i])) : Infinity, mb = lb ? (D.m[j] ?? bodyMass(L.planets[j])) : Infinity;
-    const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-    if (vn < 0) {
-      const J = -vn * Math.min(1, 1.5 * dt) / ((la ? 1 / ma : 0) + (lb ? 1 / mb : 0) || 1); // la croûte freine le rapprochement sans l'arrêter net
-      if (la) { const st = freeBody(i); st.vx -= J / ma * nx; st.vy -= J / ma * ny; }
-      if (lb) { const st = freeBody(j); st.vx += J / mb * nx; st.vy += J / mb * ny; }
-    }
+    // pas de freinage ni de déviation : l'astre traverse l'autre en gardant sa trajectoire (la croûte et le magma s'arrachent sur son passage)
   }
 }
 // deux noyaux se touchent : fusion lente (le plus lourd, ou l'astre fixe, absorbe l'autre)
