@@ -317,6 +317,11 @@ function panelBody(body) {
   if (!p.star) body.append(el('div', { class: 'row' }, el('label', {}, 'Détachable'),
     el('input', { type: 'checkbox', checked: !!p.loose, onchange: e => { if (e.target.checked) p.loose = true; else delete p.loose; changed(false); renderPanel(); } }),
     el('span', { class: 'hint' }, 'les impacts le déplacent et l’arrachent en éclats')));
+  // structure interne, utilisée lors des impacts : par défaut selon le type (lune : rocheuse ; planète : en fusion possible)
+  if (!p.star) body.append(el('div', { class: 'row' }, el('label', {}, 'Structure'),
+    el('select', { onchange: e => { if (e.target.value) p.core = e.target.value; else delete p.core; changed(false); } },
+      [['', 'Selon le type'], ['roc', 'Rocheuse : croûte et gros noyau dur, sans magma'], ['magma', 'Magmatique : croûte fine, magma épais, petit noyau']]
+        .map(([v, t]) => el('option', { value: v, selected: (p.core || '') === v }, t)))));
   // n'importe quel astre peut tourner autour de n'importe quel autre (étoiles comprises), sauf le départ et sans boucle
   const parents = Lv.planets.map((q, i) => i).filter(i => i !== sel && !isUnder(Lv, i, sel));
   if (sel !== Lv.start.p && parents.length) body.append(el('div', { class: 'row' }, el('label', {}, 'En orbite'),
@@ -733,10 +738,10 @@ function openPerso() {
     resize(); loadLevel(0, persoList(kind)[i]);
   };
   const scr = el('div', { id: 'persoScr', class: 'ed', style: 'top:0;bottom:0;overflow-y:auto;padding:calc(env(safe-area-inset-top) + 10px) 14px calc(env(safe-area-inset-bottom) + 20px);background:rgba(0,0,0,.82);display:flex;flex-direction:column;gap:10px' },
-    el('div', { class: 'row' }, el('button', { onclick: () => { closePerso(); screen = 'home'; } }, '‹ Accueil'), el('h3', { style: 'margin:0;flex:1;text-align:center;font-size:20px' }, 'Niveaux perso'), el('span', { style: 'width:90px' })),
+    el('div', { class: 'row' }, el('button', { onclick: () => { closePerso(); screen = 'home'; } }, '‹ Accueil'), el('h3', { style: 'margin:0;flex:1;text-align:center;font-size:20px' }, 'Créer / partager'), el('span', { style: 'width:90px' })),
     el('div', { class: 'row wrap' },
       el('button', { class: 'pri', onclick: () => chooseTemplate() }, '+ Créer un niveau'),
-      el('button', { onclick: pasteCode }, 'Coller un code reçu')),
+      el('button', { onclick: pasteCode }, 'Décoder un message reçu')),
     el('h3', { style: 'margin:8px 0 0;font-size:16px' }, 'Mes créations'),
     mine.length ? mine.map((l, i) => card(l.name || 'Sans nom', l.dirty || !l.hint ? el('span', { class: 'hint' }, 'à calibrer (solveur)') : stars(l), [
       el('button', { onclick: play('mine', i) }, 'Jouer'),
@@ -750,7 +755,7 @@ function openPerso() {
       el('button', { onclick: play('recus', i) }, 'Jouer'),
       el('span', { class: 'hint', style: 'flex:1 1 auto;align-self:center' }, l.hint ? 'solution reçue : aide « ? » disponible' : 'sans solution'),
       el('button', { class: 'dan', onclick: () => confirmBox(`Supprimer « ${l.name || 'Sans nom'} » ?`, () => { const r = persoList('recus'); r.splice(i, 1); persoSave('recus', r); openPerso(); }) }, 'Supprimer'),
-    ])) : el('div', { class: 'hint' }, 'Colle ici les codes de niveaux envoyés par tes amis.'),
+    ])) : el('div', { class: 'hint' }, 'Décode ici les messages extraterrestres de niveaux envoyés par tes amis.'),
     el('button', { style: 'margin-top:16px;background:none;border:0;color:rgba(255,255,255,.45);font-weight:400', onclick: openDevLogin }, 'Mode développeur (niveaux officiels)'));
   document.body.append(scr);
 }
@@ -772,17 +777,19 @@ function shareBox(title, text, note) {
   });
 }
 
+// partage : le même « message extraterrestre » signé que la sauvegarde (t : N = niveau, S = solution)
 function shareLevel(l) {
   if (l.dirty || !l.hint) { alertBox('Lance d’abord le solveur (onglet Solveur) : il vérifie que ton niveau est faisable et fixe le gaz et le chrono.'); return; }
-  const code = 'ORBITE-N1:' + b64e(JSON.stringify(sharePayload(l)));
-  shareBox('Partager ce niveau', `Défi Orbite : « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Niveaux perso → Coller un code reçu.\n${code}`,
+  const code = alienPack({ t: 'N', l: sharePayload(l) }, '🪐', '🛸');
+  shareBox('Partager ce niveau 👽', `Défi Orbite : « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Créer / partager → Décoder un message reçu.\n${code}`,
     'Le niveau part sans sa solution. Tu pourras l’envoyer plus tard avec « Solution ».');
 }
 
 function shareSolution(l) {
   if (l.dirty || !l.hint) { alertBox('Pas encore de solution : lance d’abord le solveur.'); return; }
-  const code = 'ORBITE-S1:' + b64e(JSON.stringify({ sig: levelSig(sharePayload(l)), hint: l.hint }));
-  shareBox('Partager la solution', `Solution Orbite pour « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Niveaux perso → Coller un code reçu.\n${code}`,
+  let sig; try { sig = levelSig(sanitizeLevel(sharePayload(l))); } catch (err) { sig = levelSig(sharePayload(l)); } // même empreinte que le niveau une fois reçu
+  const code = alienPack({ t: 'S', sig, hint: l.hint }, '🧭', '🛸');
+  shareBox('Partager la solution 👽', `Solution Orbite pour « ${l.name || 'Niveau perso'} »\nCopie tout ce message, puis dans Orbite : Créer / partager → Décoder un message reçu.\n${code}`,
     'Ton ami pourra afficher la trajectoire conseillée avec l’aide « ? ».');
 }
 
@@ -808,6 +815,8 @@ function sanitizeLevel(o) {
     if (hex(p.color)) q.color = hex(p.color);
     if (STYLES[p.style]) q.style = p.style;
     if (str(p.name, 30)) q.name = str(p.name, 30);
+    if (p.loose === true && !q.star) q.loose = true;
+    if ((p.core === 'roc' || p.core === 'magma') && !q.star) q.core = p.core;
     return q;
   });
   planets.forEach((p, i) => { for (let k = i, n = 0; planets[k].orbit; n++) { k = planets[k].orbit.p; if (k === i || n > 8) throw 0; } }); // orbites imbriquées permises, sans boucle
@@ -826,12 +835,17 @@ function sanitizeLevel(o) {
 }
 
 function importCode(text) {
-  const m = /ORBITE-([NS])1:([A-Za-z0-9_-]+)/.exec(text || '');
-  if (!m) return 'Aucun code Orbite trouvé dans ce texte.';
-  let data;
-  try { data = JSON.parse(b64d(m[2])); } catch (e) { return 'Code abîmé : vérifie que tout le message a été copié.'; }
+  let kind, data;
+  const m = /ORBITE-([NS])1:([A-Za-z0-9_-]+)/.exec(text || ''); // anciens codes, toujours acceptés
+  if (m) { kind = m[1]; try { data = JSON.parse(b64d(m[2])); } catch (e) { return 'Code abîmé : vérifie que tout le message a été copié.'; } }
+  else {
+    const o = alienUnpack(text);
+    if (!o) return [...(text || '')].some(g => b64Of[g] !== undefined) ? '📡 Signal brouillé… le message est incomplet ou a été retouché.' : 'Aucun message Orbite trouvé dans ce texte.';
+    if (o.v === 1 && typeof o.m === 'string') return 'C’est un message de sauvegarde : récupère-le avec la disquette de l’accueil.';
+    if (o.t === 'N') { kind = 'N'; data = o.l; } else if (o.t === 'S') { kind = 'S'; data = o; } else return 'Message inconnu.';
+  }
   const recus = persoList('recus');
-  if (m[1] === 'N') {
+  if (kind === 'N') {
     let lv;
     try { lv = sanitizeLevel(data); } catch (e) { return 'Ce niveau n’est pas valide.'; }
     const sig = levelSig(lv);
@@ -849,12 +863,12 @@ function importCode(text) {
 
 function pasteCode() {
   modal((box, close) => {
-    const ta = el('textarea', { placeholder: 'Colle ici le message reçu (niveau ou solution)', style: 'min-height:120px' });
+    const ta = el('textarea', { placeholder: 'Colle ici le message extraterrestre reçu (niveau ou solution)', style: 'min-height:120px' });
     const msg = el('div', { class: 'hint' });
-    box.append(el('h3', {}, 'Coller un code reçu'), ta, msg, el('div', { class: 'row', style: 'flex-wrap:wrap' },
+    box.append(el('h3', {}, 'Décoder un message 👽'), ta, msg, el('div', { class: 'row', style: 'flex-wrap:wrap' },
       navigator.clipboard?.readText ? el('button', { style: 'flex:1 1 100%', onclick: () => navigator.clipboard.readText().then(t => { ta.value = t; }, () => { msg.textContent = 'Colle le texte à la main dans la case.'; }) }, 'Coller le presse-papiers') : null,
       el('button', { style: 'flex:1', onclick: close }, 'Fermer'),
-      el('button', { class: 'pri', style: 'flex:1', onclick: () => { const r = importCode(ta.value); msg.textContent = r; if (/ajouté|Solution reçue/.test(r)) setTimeout(() => { close(); openPerso(); }, 900); } }, 'Ajouter')));
+      el('button', { class: 'pri', style: 'flex:1', onclick: () => { const r = importCode(ta.value); msg.textContent = r; if (/ajouté|Solution reçue/.test(r)) setTimeout(() => { close(); openPerso(); }, 900); } }, 'Décoder')));
   });
 }
 

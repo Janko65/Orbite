@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 93; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 95; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -81,7 +81,7 @@ noteOpened(); // avant la vérification des niveaux modifiés
 
 // astres pris en compte dans les empreintes : sans les morceaux nés en partie ni le réglage « détachable »
 // (il ne joue qu'une fois le vaisseau écrasé : il ne change ni le parcours ni les étoiles)
-const sigPlanets = l => l.planets.filter(p => !p.frag).map(p => { if (!p.loose) return p; const { loose, ...q } = p; return q; });
+const sigPlanets = l => l.planets.filter(p => !p.frag).map(p => { if (!p.loose && !p.core) return p; const { loose, core, ...q } = p; return q; });
 // empreinte d'un niveau (tout ce qui change le jeu : astres, départ, objectifs, ceintures, gaz, chrono)
 function levelSig(l) {
   const str = JSON.stringify([sigPlanets(l), l.start, l.steps, l.belts || null, l.fuel, l.time]);
@@ -977,23 +977,29 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const alienOf = {}, b64Of = {};
 [...ALIEN].forEach((g, i) => { alienOf[B64[i]] = g; b64Of[g] = B64[i]; });
 const fnv = str => { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
-function progressCode() {
-  let sigs = {}; try { sigs = JSON.parse(localStorage.getItem('orbite-empreintes') || '{}') || {}; } catch (e) {}
-  const m = LV.map((_, i) => { const md = medals[i] || []; return (md[0] ? 1 : 0) + (md[1] ? 2 : 0) + (md[2] ? 4 : 0); }).join('');
-  const data = JSON.stringify({ v: 1, m, s: LV.map((l, i) => medals[i] ? medalSig(l) : ''), o: [...opened], n: lvl, k: shipKind });
-  const b = btoa(unescape(encodeURIComponent(data))).replace(/=+$/, ''), h = fnv(data);
+// message extraterrestre : un objet → base64 en glyphes, signé (toute retouche le rend illisible)
+function alienPack(obj, head = '👽', tail = '🛸') {
+  const data = JSON.stringify(obj), b = btoa(unescape(encodeURIComponent(data))).replace(/=+$/, ''), h = fnv(data);
   const chk = Array.from({ length: 6 }, (_, k) => B64[(h >>> (k * 5)) & 63]).join('');
   const glyphs = [...(b + chk)].map(c => alienOf[c]).join('');
-  return '👽 ' + glyphs.match(/.{1,5}/gu).join(' ') + ' 🛸';
+  return head + ' ' + glyphs.match(/.{1,5}/gu).join(' ') + ' ' + tail;
 }
-function readProgressCode(txt) {
-  const raw = [...txt].filter(g => b64Of[g] !== undefined).map(g => b64Of[g]).join('');
+function alienUnpack(txt) {
+  const raw = [...(txt || '')].filter(g => b64Of[g] !== undefined).map(g => b64Of[g]).join('');
   if (raw.length < 10) return null;
   const b = raw.slice(0, -6), chk = raw.slice(-6);
   let data; try { data = decodeURIComponent(escape(atob(b + '==='.slice((b.length + 3) % 4)))); } catch (e) { return null; }
   const h = fnv(data);
   if (Array.from({ length: 6 }, (_, k) => B64[(h >>> (k * 5)) & 63]).join('') !== chk) return null; // signature fausse : message retouché
-  try { const o = JSON.parse(data); return o && o.v === 1 && typeof o.m === 'string' ? o : null; } catch (e) { return null; }
+  try { return JSON.parse(data); } catch (e) { return null; }
+}
+function progressCode() {
+  const m = LV.map((_, i) => { const md = medals[i] || []; return (md[0] ? 1 : 0) + (md[1] ? 2 : 0) + (md[2] ? 4 : 0); }).join('');
+  return alienPack({ v: 1, m, s: LV.map((l, i) => medals[i] ? medalSig(l) : ''), o: [...opened], n: lvl, k: shipKind });
+}
+function readProgressCode(txt) {
+  const o = alienUnpack(txt);
+  return o && o.v === 1 && typeof o.m === 'string' ? o : null;
 }
 function applyProgress(o) {
   medals = {}; opened = new Set((o.o || []).map(Number).filter(i => i >= 0 && i < LV.length));
@@ -1586,7 +1592,8 @@ function boom(pi = -1, why = '') {
 const SHIP_IMPACT_M = 6000;   // « masse » du vaisseau pour l'élan transmis (une petite lune peut être chassée de son orbite)
 const SMALL_R = 60;          // rayon max d'un « petit » astre, que le vaisseau peut pousser (la structure, elle, dépend du type : lune ou planète)
 const MERGE_TIME = 5;         // secondes de fusion de deux noyaux
-const isMoonBody = i => { const p = L.planets[i]; return p.type === 'lune' || (!!p.orbit && !L.planets[p.orbit.p].star); };
+// structure « lune » (croûte + gros noyau dur, sans magma) ou « planète » (croûte fine, magma, petit noyau) : réglable par astre (p.core), sinon selon le type
+const isMoonBody = i => { const p = L.planets[i]; if (p.core) return p.core === 'roc'; return p.type === 'lune' || (!!p.orbit && !L.planets[p.orbit.p].star); };
 const coreK = i => isMoonBody(i) ? 0.55 : 0.1, magmaK = i => isMoonBody(i) ? 0 : 0.9; // rayons relatifs : noyau, haut du magma (planète : croûte fine, magma épais, petit noyau)
 function dynBody(i) {
   if (!L._dyn) L._dyn = newDyn();
@@ -2108,7 +2115,7 @@ function splitPlanet(i, j, A, Bj) {
   for (const f of parts) {
     const [cx, cy] = polyCentroid(f.q), hh = radialProfile(f.q, cx, cy), rmax = Math.max(...hh), core = inPoly(f.q, A.x, A.y);
     const np = { type: p.type, x: Math.round(cx), y: Math.round(cy), r: Math.max(4, Math.round(rmax)), frag: true, loose: true, ring: false }; // les anneaux restent à l'astre d'origine (ils disparaissent avec lui)
-    for (const k of ['g', 'tint', 'shade', 'axis', 'name']) if (p[k] !== undefined) np[k] = p[k];
+    for (const k of ['g', 'tint', 'shade', 'axis', 'name', 'core']) if (p[k] !== undefined) np[k] = p[k];
     const n = L.planets.push(np) - 1, mf = m0 * f.a / sumA, rc = core ? D.rc[i] : 1;
     D.h[n] = hh.map(v => Math.max(rc, v)); D.rc[n] = rc; D.rmax[n] = Math.max(rc, rmax); D.m[n] = mf; (D.dens = D.dens || {})[n] = D.dens[i] ?? bodyMass(p) / (Math.PI * p.r * p.r); (D.madd = D.madd || {})[n] = ((D.madd[i] || 0)) * f.a / sumA;
     const share = 1 - f.a / sumA; // les deux moitiés s'écartent, la plus légère plus vite
@@ -2252,7 +2259,7 @@ function drawHome() {
   button(hl.play, lvl > 0 ? `Continuer · niveau ${lvl + 1}` : 'Jouer', true);
   button(hl.levels, 'Niveaux', false);
   button(hl.tuto, 'Tutoriel', false);
-  button(hl.editor, 'Créer un niveau', false);
+  button(hl.editor, 'Créer / partager', false);
   { // disquette
     const b = hl.save, cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.beginPath(); ctx.arc(cx, cy, 21, 0, Math.PI * 2); ctx.fill();
