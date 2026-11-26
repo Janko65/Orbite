@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 99; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 101; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -1713,8 +1713,25 @@ function debris(i, cut, ivx, ivy, power, aim) {
   return n;
 }
 // un pas des astres libres : gravité de tous les autres, puis chocs entre astres
+// stabilité : tant que la gravité ressentie par un astre sur ses rails reste celle prévue par le niveau, il garde son orbite ;
+// dès qu'une perturbation imprévue (astre poussé, coupé, absorbé, morceau, étoile alourdie…) l'écarte de plus de quelques %,
+// il décroche avec sa vitesse du moment et la gravité de tout le système le guide. Une étoile fixe ne décroche jamais.
+const UNSTABLE_K = 0.03;
+function destabilize(t) {
+  const D = L._dyn;
+  if (!D.plan) D.plan = { planets: L.planets.filter(p => !p.frag).map(p => ({ ...p })), belts: L.belts }; // le niveau tel que conçu
+  const Bt = snapshot(L, t), Bp = snapshot(D.plan, t);
+  const acc = (Bs, x, y, skip) => { let ax = 0, ay = 0; for (const o of Bs) { if (o.i === skip || o.gone || !o.m) continue; const dx = o.x - x, dy = o.y - y, d2 = dx * dx + dy * dy; if (d2 < 1) continue; const g = o.m / (d2 * Math.sqrt(d2)); ax += g * dx; ay += g * dy; } return [ax, ay]; };
+  Bp.forEach((q, i) => {
+    const p = L.planets[i];
+    if (D.st[i] || D.gone[i] || (p.star && !p.orbit)) return;
+    const [px, py] = acc(Bp, q.x, q.y, i), b = Bt[i], [axx, ayy] = acc(Bt, b.x, b.y, i);
+    if (hyp(axx - px, ayy - py) > UNSTABLE_K * hyp(px, py) + 0.05) freeBody(i);
+  });
+}
 function stepDyn(dt) {
   const D = L._dyn; if (!D) return;
+  destabilize(wt);
   const ids = Object.keys(D.st).map(Number).filter(i => !D.gone[i]);
   if (ids.length) {
     const n = SUB, h = dt / n;
@@ -1779,6 +1796,7 @@ function collideBodies(t, dt) {
     if (a.gone || b.gone || (!D.st[i] && !D.st[j])) continue;
     const dx = b.x - a.x, dy = b.y - a.y, d = hyp(dx, dy) || 1, nx = dx / d, ny = dy / d;
     if (d > a.r + b.r + 0.3 * Math.min(a.r, b.r)) continue;
+    if (a.star && b.star) continue; // deux étoiles : elles se croisent (elles ne se détruisent pas)
     if (a.star || b.star) { // un astre tombé dans une étoile s'y consume
       const [S, P] = a.star ? [a, b] : [b, a];
       if (d < S.r + surfR(P, S.x - P.x, S.y - P.y)) burnBody(P.i, S); // au contact
@@ -2061,6 +2079,7 @@ function stripSide(i, ang, depth, hw, S) {
 // ===== Planètes coupées en deux, lave =====
 // Le noyau d'une planète est petit (10 %) : un astre qui la traverse assez vite la tranche le long de son passage. Chaque moitié
 // devient un astre à part entière (forme, masse, centre de gravité, vitesse) ; elles peuvent se séparer, se repercuter, refusionner.
+const SPLIT_K = 0.1;      // seuil d'énergie pour briser une planète (×M²/R) : un choc à la vitesse de chute naturelle peut la couper si l'impacteur pèse assez
 const SPLIT_V = 20;       // vitesse relative minimale pour trancher (en dessous : les deux astres fusionnent)
 const LAVA_TIME = 20;     // secondes pendant lesquelles une surface en fusion reste très mouvante après un choc
 const polyArea = q => { let a = 0; for (let k = 0; k < q.length; k++) { const [x0, y0] = q[k], [x1, y1] = q[(k + 1) % q.length]; a += x0 * y1 - x1 * y0; } return a / 2; };
@@ -2100,7 +2119,7 @@ function splitEnergy(P, Q, rv, hit, pFirst) {
   const D = L._dyn; let mt = D.m[P] ?? bodyMass(L.planets[P]), mi = D.m[Q] ?? bodyMass(L.planets[Q]);
   if (hit) { rv = Math.max(rv, hit.v); mt = pFirst ? hit.mi : hit.mj; mi = pFirst ? hit.mj : hit.mi; } // énergie et masses du premier contact
   const Rt = L.planets[P].r;
-  return 0.5 * mi * rv * rv >= 0.3 * mt * mt / Rt * (heatOf(P) > 0.5 ? 0.6 : 1);
+  return 0.5 * mi * rv * rv >= SPLIT_K * mt * mt / Rt * (heatOf(P) > 0.5 ? 0.6 : 1);
 }
 // la planète i est tranchée par l'astre j qui la traverse : deux morceaux de part et d'autre de son passage
 function splitPlanet(i, j, A, Bj) {
@@ -2118,12 +2137,20 @@ function splitPlanet(i, j, A, Bj) {
   for (let k = 0; k < PROF_N; k++) { const a = k / PROF_N * Math.PI * 2, px = A.x + Math.cos(a) * h[k] * 0.5, py = A.y + Math.sin(a) * h[k] * 0.5; if (Math.abs((px - Bj.x) * nx + (py - Bj.y) * ny) < w * 1.5) cut.push([k, D.rc[i], h[k]]); }
   debris(i, cut, Bj.vx, Bj.vy, vl + 30);
   const st0 = freeBody(i), m0 = D.m[i] ?? bodyMass(p), sumA = parts.reduce((s2, f) => s2 + f.a, 0), sep = 8 + vl * 0.3;
+  { // le noyau atteint explose : un souffle de roche brûlante qui écarte le magma et libère le passage
+    const rcI = D.rc[i] || 1, n = Math.min(260, Math.round(rcI * rcI * 2.5)), cx = A.x, cy = A.y;
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * rcI, v = 30 + Math.random() * (50 + vl * 0.5);
+      particles.push({ x: cx + Math.cos(a) * rr, y: cy + Math.sin(a) * rr, vx: st0.vx + Math.cos(a) * v, vy: st0.vy + Math.sin(a) * v, life: Infinity, max: 1, rgb: Math.random() < 0.5 ? '140,50,22' : '255,150,60', sz: 1 + Math.random(), grav: true, slide: true, magma: Math.random() < 0.5 ? 0.2 : undefined });
+    }
+    flashes.push({ x: cx, y: cy, r: 40 + rcI * 6, t0: performance.now(), rgb: '255,170,90', dur: 700 });
+  }
   let best = -1, bestA = 0;
   for (const f of parts) {
     const [cx, cy] = polyCentroid(f.q), hh = radialProfile(f.q, cx, cy), rmax = Math.max(...hh), core = inPoly(f.q, A.x, A.y);
     const np = { type: p.type, x: Math.round(cx), y: Math.round(cy), r: Math.max(4, Math.round(rmax)), frag: true, loose: true, ring: false }; // les anneaux restent à l'astre d'origine (ils disparaissent avec lui)
     for (const k of ['g', 'tint', 'shade', 'axis', 'name', 'core']) if (p[k] !== undefined) np[k] = p[k];
-    const n = L.planets.push(np) - 1, mf = m0 * f.a / sumA, rc = core ? D.rc[i] : 1;
+    const n = L.planets.push(np) - 1, mf = m0 * f.a / sumA, rc = 1; // le noyau a explosé : aucune moitié ne le garde
     D.h[n] = hh.map(v => Math.max(rc, v)); D.rc[n] = rc; D.rmax[n] = Math.max(rc, rmax); D.m[n] = mf; (D.dens = D.dens || {})[n] = D.dens[i] ?? bodyMass(p) / (Math.PI * p.r * p.r); (D.madd = D.madd || {})[n] = ((D.madd[i] || 0)) * f.a / sumA;
     const share = 1 - f.a / sumA; // les deux moitiés s'écartent, la plus légère plus vite
     D.st[n] = { x: cx, y: cy, vx: st0.vx + nx * f.sg * sep * share * 2, vy: st0.vy + ny * f.sg * sep * share * 2, t: wt };
