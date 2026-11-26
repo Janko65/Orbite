@@ -24,7 +24,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 81; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 83; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -831,6 +831,8 @@ const planetAt = (cx, cy) => {
   const wx = (cx - ox) / scale, wy = (cy - oy) / scale;
   return B.findIndex(p => Math.hypot(wx - p.x, wy - p.y) < p.r + 20 / scale);
 };
+// l'astre de départ qui touche le panneau de commande ne se sélectionne pas (on viserait les commandes)
+const startLocked = pi => pi >= 0 && L && pi === L.start.p && B[pi] && oy + (B[pi].y + B[pi].r) * scale >= bandTop;
 
 // ===== Commande =====
 // clavier (PC) : flèches, ZQSD ou WASD = poussée dans la direction de la touche (diagonales possibles)
@@ -1072,13 +1074,14 @@ cv.addEventListener('pointerdown', e => {
     if (inBox(e, helpBtn())) { toggleHelp(); return; }
     if (inGame) {
       const pi = planetAt(e.clientX, e.clientY); // un astre touché : sa gravité et son orbite (un seul à la fois)
+      if (startLocked(pi)) return;
       if (pi >= 0) { selPlanet = selPlanet === pi ? -1 : pi; return; }
       taps = [simPoint(e.clientX, e.clientY)]; runPlan(); // le vide touché : simulation vers ce point
       return;
     }
   } else if (inGame) { // en vol : les astres restent cliquables
     const pi = planetAt(e.clientX, e.clientY);
-    if (pi >= 0) selPlanet = selPlanet === pi ? -1 : pi;
+    if (pi >= 0 && !startLocked(pi)) selPlanet = selPlanet === pi ? -1 : pi;
     return;
   }
   // avant le lancement, seule la zone du cercle de commande réagit ; ensuite tout le bandeau
@@ -1745,6 +1748,17 @@ function draw() {
       ctx.fillStyle = '#000'; ctx.fillText(txt, b.x, b.y + 0.5 / scale);
       ctx.globalAlpha = 1;
     }
+  }
+  // astre touché : son nom écrit dedans, sans article (« la Lune » → « Lune »), sous le numéro d'objectif s'il y en a un
+  if (selPlanet >= 0 && B[selPlanet]) {
+    const b = B[selPlanet], name = (n => n.charAt(0).toUpperCase() + n.slice(1))((lossName(selPlanet) || '').replace(/^(le |la |l’|l')/, '')), badge = ba > 0 && state === 'play' && L.steps.some((st, i) => i >= mission.step && st.type !== 'zone' && st.p === selPlanet);
+    let fs = Math.max(10, Math.min(15, b.r * scale * 0.34));
+    ctx.font = `600 ${fs / scale}px ${FONT}`;
+    const w = ctx.measureText(name).width; if (w > b.r * 1.7 && fs > 10) { fs = Math.max(10, fs * b.r * 1.7 / w); ctx.font = `600 ${fs / scale}px ${FONT}`; }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const y = badge ? b.y + (12 + fs * 0.9) / scale : b.y;
+    ctx.lineJoin = 'round'; ctx.lineWidth = 3 / scale; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.strokeText(name, b.x, y);
+    ctx.fillStyle = '#fff'; ctx.fillText(name, b.x, y);
   }
 
   // trajectoire de l'aide (solution conseillée)
