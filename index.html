@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 97; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 98; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -769,7 +769,7 @@ function loadLevel(i, obj) {
   if (!L.time) L.time = 60;
   wt = 0; launched = false; B = snapshot(L, 0);
   ship = startState(L);
-  fuel = L.fuel; flashes = []; particles = []; wrecks = []; bigBlobs = []; delete L._dyn; texCache.clear(); touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear();
+  fuel = L.fuel; flashes = []; particles = []; wrecks = []; bigBlobs = []; delete L._dyn; texCache.clear(); touches.clear(); idleT = 0; waitLight = null; view = { z: 1, px: 0, py: 0 }; pinch = null; gamePtrs.clear(); endTap = null; endHide = false; endVis = 1;
   mission = missionInit(); departed = false; elapsed = 0; result = null;
   selPlanet = -1; taps = []; plan = null; showHelp = false; helpRes = null;
   auto = null; simFlight = false; curTh = null; tip = null; predHit = -1; ringHoles = {}; beltGone = {}; flyRocks = [];
@@ -1131,10 +1131,11 @@ cv.addEventListener('pointerdown', e => {
       return;
     }
   }
-  if (state !== 'play') { // fin de partie : seulement les deux boutons de la question, une fois affichée
-    if (stateT < END_DELAY) return;
-    const k = endBtns().findIndex(b => inBox(e, b));
-    if (k >= 0) endAction(k);
+  if (state !== 'play') { // fin de partie : deux doigts = zoom et déplacement ; un appui court = boutons (ou les masquer / réafficher)
+    gamePtrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    if (gamePtrs.size >= 2) { endTap = null; if (!pinch) pinchStart(); return; }
+    endTap = { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() };
     return;
   }
   if (inBox(e, menuBtn())) { cancelJobs(); if (testMode) backToEditor(); else if (playCtx) openPerso(); else screen = 'levels'; return; }
@@ -1179,12 +1180,19 @@ cv.addEventListener('pointerdown', e => {
 }, { passive: false });
 cv.addEventListener('pointermove', e => {
   if (screen === 'editor') { editorPointerMove(e); return; }
-  const g = gamePtrs.get(e.pointerId); if (g) { g.x = e.clientX; g.y = e.clientY; if (pinch && gamePtrs.size >= 2 && !departed) pinchMove(); }
+  const g = gamePtrs.get(e.pointerId); if (g) { g.x = e.clientX; g.y = e.clientY; if (pinch && gamePtrs.size >= 2 && (!departed || state !== 'play')) pinchMove(); }
   const t = touches.get(e.pointerId); if (t) { t.x = e.clientX; t.y = e.clientY; }
 });
 const release = e => {
   if (screen === 'editor') { editorPointerUp(e); return; }
   touches.delete(e.pointerId);
+  if (endTap && endTap.id === e.pointerId && state !== 'play' && screen === 'game') { // appui court en fin de partie
+    const tp = endTap; endTap = null;
+    if (!pinch && hyp(e.clientX - tp.x, e.clientY - tp.y) < 12 && performance.now() - tp.t < 500 && stateT >= END_DELAY) {
+      const k = endHide ? -1 : endBtns().findIndex(b => inBox(e, b));
+      if (k >= 0) endAction(k); else endHide = !endHide;
+    }
+  }
   if (gamePtrs.delete(e.pointerId) && pinch && gamePtrs.size < 2) { pinch = null; clearTimeout(release.t); release.t = setTimeout(buildTextures, 150); } // textures nettes au nouveau zoom
 };
 cv.addEventListener('pointerup', release);
@@ -1575,9 +1583,8 @@ function boom(pi = -1, why = '') {
   }
   if (pi >= 0 && !star && why !== 'belt' && movable(pi)) { // astre détachable : le choc creuse un cratère
     const b = B[pi], spd = hyp(ship.vx - b.vx, ship.vy - b.vy);
-    // l'élan n'est transmis que si tout le vaisseau a été pulvérisé (aucun morceau ne repart) et seulement à un petit astre
-    // (rayon ≤ SMALL_R, lune ou planète) : un grand astre est trop lourd pour bouger à cause du vaisseau
-    if (!rest.length && L.planets[pi].r <= SMALL_R) pushBody(pi, ix, iy, ship.vx, ship.vy, SHIP_IMPACT_M);
+    // élan transmis à un petit astre (rayon ≤ SMALL_R) : la part du vaisseau qui s'est écrasée ; un grand astre est trop lourd pour bouger
+    if (L.planets[pi].r <= SMALL_R) pushBody(pi, ix, iy, ship.vx, ship.vy, SHIP_IMPACT_M * (rest.length ? hit.length / pts.length : 1)); // toujours déviée : d'autant plus que le vaisseau s'est pulvérisé et allait vite
     if (heatOf(pi) >= 0.5) spawnBigBlobs(pi, ix, iy, nx, ny, spd); // astre en fusion : le magma s'en arrache
     dig(pi, Math.atan2(ny, nx), Math.min(L.planets[pi].r * 0.35, 1.5 + spd * 0.06), 6 + spd * 0.08, ship.vx, ship.vy, spd);
   }
@@ -2331,7 +2338,7 @@ function updateCam() {
 }
 
 // vue avant le lancement : zoom (1 à 4) et déplacement à deux doigts
-let view = { z: 1, px: 0, py: 0 }, pinch = null, tapUndo = null;
+let view = { z: 1, px: 0, py: 0 }, pinch = null, tapUndo = null, endTap = null, endHide = false, endVis = 1, endVisT = 0;
 const gamePtrs = new Map();
 function pinchStart() {
   const [a, b] = [...gamePtrs.values()], mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
@@ -2720,7 +2727,9 @@ const endBtns = () => {
 };
 function drawEndPanel() {
   if (state === 'play' || stateT < END_DELAY) return;
-  const a = Math.min(1, (stateT - END_DELAY) / 0.5), top = bandTop - 10;
+  { const now = performance.now(), dt = Math.min(0.1, (now - endVisT) / 1000); endVisT = now; endVis += ((endHide ? 0 : 1) - endVis) * Math.min(1, dt * 7); } // fondu des boutons
+  const a = Math.min(1, (stateT - END_DELAY) / 0.5) * endVis, top = bandTop - 10;
+  if (a < 0.01) return;
   ctx.save(); ctx.globalAlpha = a;
   const g = ctx.createLinearGradient(0, top - 40, 0, H); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.35, 'rgba(0,0,0,0.6)'); g.addColorStop(1, 'rgba(0,0,0,0.85)');
   ctx.fillStyle = g; ctx.fillRect(0, top - 40, W, H - top + 40);
