@@ -63,12 +63,12 @@ function bodyPos(L, i, t) {
 // position de tous les astres à l'instant t (temps compté depuis le premier jet)
 // B.belts : ceintures d'astéroïdes {x, y, r, w} autour d'une planète ou d'une étoile (jamais d'une lune)
 function snapshot(L, t) {
-  const withBelts = B => { B.belts = (L.belts || []).filter(b => B[b.p]).map(b => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w, e: b.e || 1, tilt: (b.tilt || 0) * Math.PI / 180, vc: b.vc || 0, rs: b.rs || 1 })); return B; };
+  const withBelts = B => { B.belts = (L.belts || []).map((b, k) => [b, (L._lb && L._lb[k]) || {}]).filter(([b]) => B[b.p]).map(([b, lk]) => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w, e: b.e || 1, tilt: (b.tilt || 0) * Math.PI / 180, vc: lk.vc ?? b.vc ?? 0, rs: lk.rs ?? b.rs ?? 1 })); return B; }; // lk : retouche visuelle (couleurs, taille des rochers)
   const D = L._dyn;
   if (D) return withBelts(L.planets.map((p, i) => {
     if (D.gone[i]) return { i, x: 1e7, y: 1e7, vx: 0, vy: 0, r: 0, m: 0, star: !!p.star, gone: true };
     const [x, y, vx, vy] = bodyPos(L, i, t);
-    return { i, x, y, vx, vy, r: D.rmax[i] ?? p.r, m: D.m[i] ?? bodyMass(p), star: !!p.star, h: D.h[i] };
+    return { i, x, y, vx, vy, r: D.rmax[i] ?? p.r, m: D.m[i] ?? bodyMass(p), star: !!p.star, bh: !!(D.bh && D.bh[i]), h: p.star ? undefined : D.h[i] };
   }));
   if (!hasMoons(L)) {
     if (!L._B) L._B = withBelts(L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star })));
@@ -107,7 +107,7 @@ function influence(B, i) {
 function inShadow(B, x, y) {
   let any = false;
   for (const S of B) {
-    if (!S.star) continue;
+    if (!S.star || S.bh || S.gone) continue; // un trou noir n'éclaire pas
     any = true;
     let blocked = false;
     const dx = S.x - x, dy = S.y - y, l2 = dx * dx + dy * dy;

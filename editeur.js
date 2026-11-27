@@ -273,6 +273,7 @@ function panelBody(body) {
   if (p.star) {
     // étoile : couleur (température) et intensité de la lumière émise
     body.append(slider('Couleur', 0, 1, 0.05, p.temp ?? 0.5, v => starName({ temp: v }), v => { p.temp = +v.toFixed(2); changed(true); }));
+    body.append(slider('Rotation', -0.4, 0.4, 0.01, starSpin(p, sel), v => v ? `${(Math.abs(v) * 60 / (2 * Math.PI)).toFixed(1)} tr/min ${v > 0 ? '↻' : '↺'}` : 'aucune', v => { p.spin = +v.toFixed(2); changed(false); })); // sens de la spirale de matière aspirée
     body.append(slider('Intensité', 0.3, 2, 0.05, p.lum ?? 1, v => `× ${v.toFixed(2)}`, v => { p.lum = +v.toFixed(2); if (p.lum === 1) delete p.lum; changed(false); }));
     body.append(el('div', { class: 'hint' }, 'De la géante rouge à la naine blanche. Plus une étoile est grosse et intense, plus ses ombres sont marquées ; les ombres prennent la couleur des autres étoiles.'));
   }
@@ -827,7 +828,7 @@ function sanitizeLevel(o) {
     if (p.loose === true && !q.star) q.loose = true;
     if ((p.core === 'roc' || p.core === 'magma') && !q.star) q.core = p.core;
     if (+p.roll && !q.star) q.roll = num(p.roll, -1, 1);
-    if (+p.spin) q.spin = num(p.spin, -1, 1);
+    if (p.spin !== undefined && (q.star || +p.spin)) q.spin = num(p.spin, -1, 1); // étoile : 0 = immobile (sinon elle tourne par défaut)
     if (p.flow !== undefined && !q.star) q.flow = num(p.flow, 0.3, 3);
     return q;
   });

@@ -51,4 +51,48 @@ const LEVELS = [
   {"name":"Odyssée stellaire","h":4000,"planets":[{"type":"soleil","star":true,"x":-100,"y":300,"r":200,"temp":0.05,"lum":1.2,"name":"Antarès"},{"type":"terre","x":500,"y":3620,"r":95,"loose":true},{"type":"mars","x":250,"y":3000,"r":70,"loose":true},{"type":"jupiter","x":650,"y":2300,"r":140,"g":0.8,"loose":true},{"type":"soleil","star":true,"r":30,"temp":1,"lum":1.5,"name":"la Naine bleue","orbit":{"p":3,"d":260,"a0":1,"dir":1},"x":790,"y":2519},{"type":"perso","name":"Orbis","color":"#5a8fd0","style":"gaz","x":300,"y":1450,"r":110,"ring":"#d6c496","ringForm":"double","ringTilt":30,"axis":-20,"loose":true},{"type":"lune","r":28,"orbit":{"p":5,"d":220,"a0":2,"dir":-1},"x":208,"y":1650,"loose":true},{"type":"perso","name":"Terminus","color":"#c8b89a","style":"roche","x":650,"y":520,"r":70,"loose":true}],"belts":[{"p":2,"r":150,"w":28}],"start":{"p":1,"a":-1.5708},"steps":[{"type":"orbit","p":3,"n":1},{"type":"zone","x":820,"y":1250,"r":80},{"type":"land","p":7}],"fuel":13.4,"time":66,"hint":{"vmax":111.9839,"brake":22.0113,"gain":2.342,"comp":0.4144,"db":0.3104,"land":20.3582,"orbR":0.7082,"orbDir":-1,"orbK":1.6538,"wait":1.4403,"wps":[[],[],[]],"per":[{"vmax":128.48,"brake":16.9915,"gain":2.004,"comp":0.2338,"db":0.3109,"land":24.8453,"orbR":0.6415,"orbDir":-1,"orbK":1.4162,"wait":1.132},{"vmax":169.3721,"brake":9.6155,"gain":3.2691,"comp":0.8551,"db":0.3572,"land":26.0513,"orbR":0.4823,"orbDir":1,"orbK":0.5582,"wait":0.4071},{"vmax":196.5334,"brake":12.2899,"gain":2.7318,"comp":0.8697,"db":0.1824,"land":31.488,"orbR":0.6144,"orbDir":1,"orbK":1.3204,"wait":0.9313}]},"human":true,"margins":{"fuel":2,"time":1.08,"timeAny":true}},
 ];
 
+// Retouches d'apparence des niveaux officiels (index à partir de 0) : rotations, anneaux, ceintures (couleurs, taille des rochers).
+// Purement visuelles : hors des empreintes des niveaux (sauvegardes et étoiles intactes) et sans effet sur les trajectoires.
+// p : astres (par index), b : ceintures (par index) ; jamais sur l'astre de départ ni sur un astre où il faut se poser.
+const LOOKS = {
+  2: {"p":{"1":{"roll":0.04}}},
+  3: {"p":{"1":{"roll":-0.02}}},
+  4: {"p":{"1":{"roll":0.08,"axis":3}}},
+  5: {"p":{"1":{"roll":0.05}}},
+  6: {"p":{"1":{"roll":0.07}}},
+  7: {"p":{"0":{"spin":0.1},"2":{"roll":-0.02}}},
+  8: {"p":{"0":{"spin":0.12},"2":{"roll":0.08}}},
+  9: {"p":{"1":{"roll":0.05,"axis":80}},"b":{"0":{"vc":0.35,"rs":1.1}}},
+  10: {"p":{"1":{"roll":0.05},"2":{"roll":0.08}}},
+  11: {"p":{"1":{"roll":0.12}}},
+  12: {"p":{"1":{"roll":0.08}}},
+  13: {"p":{"0":{"spin":-0.1},"2":{"roll":0.05}}},
+  14: {"p":{"1":{"roll":0.05,"ringTilt":-25}},"b":{"0":{"vc":0.6,"rs":1.3}}},
+  15: {"p":{"1":{"roll":0.08,"ring":"#9a9a9a","ringForm":"fin"}}},
+  16: {"p":{"1":{"roll":0.07}}},
+  17: {"p":{"0":{"spin":0.1},"2":{"roll":0.08},"3":{"roll":0.05,"axis":80}},"b":{"0":{"vc":0.4,"rs":0.8},"1":{"vc":0.25,"rs":1.4}}},
+  18: {"p":{"1":{"roll":0.04},"2":{"roll":0.05}}},
+  19: {"p":{"0":{"spin":0.08},"2":{"roll":0.07}}},
+  20: {"p":{"0":{"spin":0.04},"3":{"roll":0.03}},"b":{"0":{"vc":0.5,"rs":1.2}}},
+  21: {"p":{"0":{"spin":0.1},"1":{"spin":-0.22},"3":{"roll":0.08}}},
+  22: {"p":{"0":{"spin":-0.1},"2":{"roll":0.05}}},
+  23: {"p":{"1":{"roll":0.08},"2":{"spin":0.32}}},
+  24: {"p":{"0":{"spin":0.12},"2":{"roll":0.04},"3":{"roll":0.05}}},
+  25: {"p":{"1":{"spin":0.36}}},
+  26: {"p":{"0":{"spin":0.08},"2":{"roll":0.04},"3":{"roll":0.08},"5":{"roll":0.05},"6":{"roll":0.07}}},
+  27: {"p":{"0":{"spin":-0.1},"2":{"roll":0.08},"3":{"roll":0.04}},"b":{"0":{"vc":0.7,"rs":1.6},"1":{"vc":0.5,"rs":0.7}}},
+  28: {"p":{"1":{"spin":0.12},"2":{"spin":-0.26}}},
+  29: {"p":{"0":{"spin":0.1},"2":{"roll":0.07}}},
+  30: {"p":{"0":{"spin":-0.08},"2":{"roll":0.08}}},
+  31: {"p":{"1":{"spin":0.2}}},
+  32: {"p":{"0":{"spin":0.05},"2":{"roll":0.07},"3":{"roll":0.05},"5":{"roll":0.08}}},
+  33: {"p":{"0":{"spin":0.08},"1":{"spin":-0.15},"2":{"spin":0.26},"4":{"roll":0.08}}},
+  34: {"p":{"0":{"spin":0.1},"2":{"roll":0.05}}},
+  35: {"p":{"0":{"spin":-0.12},"2":{"roll":0.04},"3":{"roll":0.05},"4":{"roll":0.05}},"b":{"0":{"vc":0.3,"rs":0.8},"1":{"vc":0.5,"rs":1.2},"2":{"vc":0.4,"rs":1.0}}},
+  36: {"p":{"0":{"spin":0.1},"2":{"roll":0.08},"3":{"roll":0.07}}},
+  37: {"p":{"1":{"spin":0.2},"2":{"roll":0.05}},"b":{"0":{"vc":0.8,"rs":1.3}}},
+  38: {"p":{"0":{"spin":-0.1},"2":{"roll":0.08}}},
+  39: {"p":{"0":{"spin":0.04},"3":{"roll":0.08},"4":{"spin":0.3},"5":{"roll":0.04}},"b":{"0":{"vc":0.4,"rs":1.2}}},
+};
+
 if (typeof module !== 'undefined') module.exports = LEVELS;
