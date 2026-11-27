@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 122; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 123; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -487,6 +487,7 @@ function beltRockAt(px, py, pad = 0) {
 function drawBelts(Bs, t) {
   for (const [bi, b] of (Bs.belts || []).entries()) {
     if (L._dyn && L._dyn.gone[b.p]) continue; // l'astre est détruit : ses cailloux sont partis
+    if (beltGone[bi] && beltGone[bi].size >= beltRocks(b).length) continue; // tous libérés
     ctx.strokeStyle = 'rgba(150,130,110,0.08)'; ctx.lineWidth = b.w;
     ctx.beginPath(); ctx.ellipse(b.x, b.y, b.r, b.r * (b.e || 1), b.tilt || 0, 0, Math.PI * 2); ctx.stroke();
     const rot = t * 0.02, gone = beltGone[bi];
@@ -1865,6 +1866,7 @@ function stepDyn(dt) {
   const D = L._dyn; if (!D) return;
   destabilize(wt);
   if (D.heavy || D.bhAt) starEvents(dt);
+  if (L.belts) beltWatch(snapshot(L, wt));
   const ids = Object.keys(D.st).map(Number).filter(i => !D.gone[i]);
   if (ids.length) {
     const n = SUB, h = dt / n;
@@ -2167,6 +2169,33 @@ function beltSweep(Bt) {
   }
 }
 // une ceinture dont l'astre disparaît : tous ses cailloux s'en vont, avec la vitesse de leur orbite
+// un caillou de ceinture devient libre : il garde sa vitesse d'orbite autour de son astre (et l'élan de l'astre)
+function releaseRock(b, bi, ri, r, host, m) {
+  const gone = beltGone[bi] || (beltGone[bi] = new Set()); if (gone.has(ri)) return; gone.add(ri);
+  const a = r.a + performance.now() / 1000 * 0.02, rr = b.r + r.dr, [cx, cy] = beltPt({ ...b, x: host.x, y: host.y }, a, rr), v = Math.sqrt(m / Math.max(1, rr));
+  flyRocks.push({ x: cx, y: cy, vx: host.vx - Math.sin(a) * v, vy: host.vy + Math.cos(a) * v, r: r.s * 0.85, s: r.s, c: r.c, k: r.k, a: r.a, w: (Math.random() - 0.5) * 2 });
+}
+// ceintures qui réagissent : l'astre qui les tient reçoit un choc ou change nettement de masse → toute la ceinture se libère
+// (chaque caillou suit alors sa propre orbite, sous la gravité de tous) ; une étoile proche arrache un à un les cailloux qui
+// entrent dans sa zone de marée (ils chauffent, s'effritent et tombent en spirale)
+function beltWatch(Bt) {
+  const D = L._dyn; if (!L.belts || !Bt.belts) return;
+  D.bref = D.bref || {};
+  Bt.belts.forEach((b, bi) => {
+    const h = Bt[b.p]; if (!h || h.gone) return;
+    const rocks = beltRocks(b), gone = beltGone[bi]; if (gone && gone.size >= rocks.length) return;
+    const m = h.m, vo = Math.sqrt(m / Math.max(1, b.r)), ref = D.bref[bi];
+    if (ref && (hyp(h.vx - ref.vx, h.vy - ref.vy) > 0.15 * vo + 3 || m < 0.75 * ref.m || m > 1.4 * ref.m)) { rocks.forEach((r, ri) => releaseRock(b, bi, ri, r, h, m)); return; }
+    D.bref[bi] = { vx: h.vx, vy: h.vy, m };
+    for (const S of Bt) {
+      if (!S.star || S.gone || S.i === b.p || (!D.st[b.p] && !D.st[S.i])) continue; // deux astres fixes : la ceinture est stable par construction
+      const zone = S.r * 3 + 60, dd = hyp(S.x - h.x, S.y - h.y);
+      if (dd - b.r - b.w / 2 > zone) continue;
+      const rot = performance.now() / 1000 * 0.02;
+      rocks.forEach((r, ri) => { if (gone && gone.has(ri)) return; const [cx, cy] = beltPt(b, r.a + rot, b.r + r.dr); if (hyp(cx - S.x, cy - S.y) < zone) releaseRock(b, bi, ri, r, h, m); });
+    }
+  });
+}
 function releaseBelt(i, st) {
   const Bt = snapshot(L, wt), rot = performance.now() / 1000 * 0.02, m = L._dyn.m[i] ?? bodyMass(L.planets[i]);
   (L.belts || []).forEach((bl, bi) => {
@@ -2184,13 +2213,29 @@ function moveFlyRocks(fdt) {
   if (!flyRocks.length || !B || !inWorld()) return;
   for (const q of flyRocks) {
     const [ax, ay] = gravity(B, q.x, q.y); q.vx += ax * fdt; q.vy += ay * fdt; q.x += q.vx * fdt; q.y += q.vy * fdt; q.a += q.w * fdt;
+    q.hot = 0;
+    for (const S of B) { // près d'une étoile : le caillou rougit puis s'effrite en grains qui rejoignent la spirale
+      if (!S.star || S.gone) continue;
+      const d = hyp(q.x - S.x, q.y - S.y), u = 1 - (d - S.r) / (S.r * 2.5); if (u <= 0) continue;
+      q.hot = Math.max(q.hot, Math.min(1, u));
+      if (u > 0.35 && Math.random() < u * 6 * fdt && tideCount < TIDE_MAX + 1500) {
+        tideCount++; particles.push({ x: q.x, y: q.y, vx: q.vx + (Math.random() - 0.5) * 8, vy: q.vy + (Math.random() - 0.5) * 8, life: Infinity, max: 1, sz: 0.6 + Math.random() * 0.6, grav: true, slide: true, tide: S.i, tb: 5 });
+        q.s *= 0.93; q.r *= 0.93; if (q.s < 0.7) q.dead = true;
+      }
+    }
+    if (q.dead) continue;
     for (const o of B) {
       if (o.gone) continue;
       const dx = q.x - o.x, dy = q.y - o.y, d = hyp(dx, dy), sr = o.h ? surfR(o, dx, dy) : o.r;
       if (d > sr + q.r) continue;
       q.dead = true;
       const rv = hyp(q.vx - o.vx, q.vy - o.vy), nx = dx / (d || 1), ny = dy / (d || 1);
-      if (o.star) break;
+      if (o.star) { // il plonge dans l'étoile : un éclat, et ce qui reste part en grains dans la spirale
+        const n = Math.min(Math.max(0, TIDE_MAX + 1500 - tideCount), Math.round(4 + q.s * 3));
+        for (let k = 0; k < n; k++) particles.push({ x: q.x, y: q.y, vx: q.vx * 0.6 + (Math.random() - 0.5) * 20, vy: q.vy * 0.6 + (Math.random() - 0.5) * 20, life: Infinity, max: 1, sz: 0.6 + Math.random() * 0.7, grav: true, slide: true, tide: o.i, tb: 7 });
+        tideCount += n; flashes.push({ x: q.x, y: q.y, r: 6 + q.s * 2.5, t0: performance.now(), rgb: '255,230,170' });
+        break;
+      }
       if (movable(o.i)) { dig(o.i, Math.atan2(ny, nx), Math.min(q.r * 1.5, 1 + rv * 0.06), q.r * 2 + rv * 0.05, q.vx, q.vy, rv); if (L.planets[o.i].r <= SMALL_R) pushBody(o.i, o.x + nx * sr, o.y + ny * sr, q.vx, q.vy, K * q.r ** 3); } // un grand astre ne dévie pas sous les cailloux, il n'en garde que les cratères
       const rgb = rgbOf(q.c), n = Math.min(40, Math.round(q.r * q.r));
       for (let k = 0; k < n; k++) { const a = Math.atan2(ny, nx) + (Math.random() - 0.5) * 2.2, v = 8 + Math.random() * (10 + rv * 0.4); particles.push({ x: o.x + nx * (sr + 0.5), y: o.y + ny * (sr + 0.5), vx: o.vx + Math.cos(a) * v, vy: o.vy + Math.sin(a) * v, life: Infinity, max: 1, rgb, sz: 0.9, grav: true, slide: true }); }
@@ -2205,6 +2250,7 @@ function drawFlyRocks() {
     ctx.fillStyle = q.c; ctx.beginPath();
     q.k.forEach((k, j) => { const aa = j / 6 * Math.PI * 2 + q.a, px = q.x + Math.cos(aa) * q.s * k, py = q.y + Math.sin(aa) * q.s * k; j ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
     ctx.closePath(); ctx.fill();
+    if (q.hot > 0.05) { ctx.fillStyle = `rgba(255,${Math.round(150 + 90 * q.hot)},${Math.round(60 + 80 * q.hot)},${Math.min(0.9, q.hot)})`; ctx.fill(); } // chauffé au rouge puis au blanc près de l'étoile
   }
 }
 // anneaux d'une planète qui entre en fusion : chaque morceau d'anneau restant devient un pixel libre, lancé sur son orbite
@@ -2569,7 +2615,8 @@ function homeLevel() {
     const p = { type: t, x: 0, y: 0, r: Math.round(small ? R(10, 55) : R(50, 220)), loose: true, g: +R(0.2, 1.5).toFixed(2), axis: Math.round(R(-60, 60)) };
     if (t === 'perso') { p.color = hex(40, 240); p.style = pickOf(['roche', 'gaz', 'ocean', 'glace']); }
     else if (chance(0.35)) { p.tint = hex(40, 240); p.shade = +R(0.3, 0.9).toFixed(2); }
-    const core = pickOf(['', 'roc', 'magma']); if (core) p.core = core;
+    p.core = chance(0.5) ? 'roc' : 'magma'; // autant de rocheux que de magmatiques
+    if (p.core === 'magma') p.flow = +R(0.3, 3).toFixed(1); // liquidité du magma, au hasard
     if (t === 'saturne' ? chance(0.85) : chance(0.3)) { p.ring = chance(0.7) ? pickOf(RING_COLORS) : hex(60, 240); p.ringForm = pickOf(Object.keys(RING_FORMS)); p.ringTilt = Math.round(R(-90, 90)); }
     else if (t === 'saturne') p.ring = false;
     const mode = Math.random(); // tourne sur son axe (la surface défile), ou comme une roue, ou les deux, ou pas du tout
@@ -2583,9 +2630,8 @@ function homeLevel() {
     body(), body() ], start: { p: 0, a: 0 }, steps: [{ type: 'land', p: 1 }], fuel: 1, time: 1 };
   const P = Lh.planets;
   const mkStar = () => ({ type: 'soleil', star: true, x: 0, y: 0, r: Math.round(R(25, 110)), g: +R(0.3, 1).toFixed(2), temp: +Math.random().toFixed(2), lum: +R(0.5, 1.5).toFixed(2), spin: +(R(0.08, 0.3) * (chance(0.5) ? -1 : 1)).toFixed(2) });
-  if (chance(0.2)) { // de temps en temps, l'un des deux est une étoile (elle aspire et déchire ce qui l'approche)
+  if (chance(0.2)) { // de temps en temps, l'un des deux est une étoile, l'autre une planète ou une lune (jamais deux étoiles)
     const k = chance(0.5) ? 1 : 2; P[k] = mkStar();
-    if (chance(0.45)) P[3 - k] = mkStar(); // parfois deux étoiles : la plus légère est déchirée, l'autre s'effondre en trou noir
   }
   if (chance(0.35)) { // de temps en temps, une lune autour de l'un des deux (planète assez grosse)
     const ks = [1, 2].filter(k => !P[k].star && P[k].r >= 35);
