@@ -298,6 +298,7 @@ function panelBody(body) {
     // zones de l'étoile (en rayons d'étoile) : décomposition (la surface des astres s'effrite, 10 % au plus) et aspiration (plus près : ils s'y défont)
     const zr = v => v ? `${v.toFixed(1)} × rayon` : 'aucune';
     body.append(slider('Zone de décomposition', 0, 8, 0.1, +p.dz || 0, zr, v => { if (v >= 1.05) p.dz = +v.toFixed(1); else delete p.dz; if (p.az && p.dz && p.az > p.dz) p.az = p.dz; changed(false); }));
+    body.append(slider('Zone esthétique', 0, 12, 0.1, +p.ez || 0, zr, v => { if (v >= 1.05) p.ez = +v.toFixed(1); else delete p.ez; changed(false); })); // pur décor : des pixels arrachés, sans effet
     body.append(slider("Zone d'aspiration", 0, 8, 0.1, +p.az || 0, zr, v => { if (v >= 1.05) p.az = +Math.min(v, p.dz || v).toFixed(1); else delete p.az; changed(false); }));
     body.append(slider('Intensité', 0.3, 2, 0.05, p.lum ?? 1, v => `× ${v.toFixed(2)}`, v => { p.lum = +v.toFixed(2); if (p.lum === 1) delete p.lum; changed(false); }));
     body.append(el('div', { class: 'hint' }, 'De la géante rouge à la naine blanche. Plus une étoile est grosse et intense, plus ses ombres sont marquées ; les ombres prennent la couleur des autres étoiles.'));
@@ -853,7 +854,7 @@ function sanitizeLevel(o) {
     if (p.loose === true && !q.star) q.loose = true;
     if ((p.core === 'roc' || p.core === 'magma') && !q.star) q.core = p.core;
     if (+p.roll && !q.star) q.roll = num(p.roll, -1, 1);
-    if (q.star && +p.dz) q.dz = num(p.dz, 1, 8); if (q.star && +p.az) q.az = num(p.az, 1, q.dz || 8); // zones de l'étoile
+    if (q.star && +p.dz) q.dz = num(p.dz, 1, 8); if (q.star && +p.az) q.az = num(p.az, 1, q.dz || 8); if (q.star && +p.ez) q.ez = num(p.ez, 1, 12); // zones de l'étoile
     if (p.spin !== undefined && (q.star || +p.spin)) q.spin = num(p.spin, -1, 1); // étoile : 0 = immobile (sinon elle tourne par défaut)
     if (p.flow !== undefined && !q.star) q.flow = num(p.flow, 0.3, 3);
     return q;
@@ -1040,7 +1041,7 @@ function editorDraw() {
   // zones des étoiles : décomposition (pointillés orangés) et aspiration (pointillés rouges)
   Lv.planets.forEach((p, i) => {
     if (!p.star || !Bs[i]) return;
-    for (const [k, c] of [['dz', 'rgba(255,170,90,0.45)'], ['az', 'rgba(255,80,60,0.55)']]) {
+    for (const [k, c] of [['ez', 'rgba(255,230,180,0.22)'], ['dz', 'rgba(255,170,90,0.45)'], ['az', 'rgba(255,80,60,0.55)']]) {
       if (!(+p[k] > 1)) continue;
       ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.setLineDash([5 / scale, 5 / scale]); ctx.beginPath(); ctx.arc(Bs[i].x, Bs[i].y, p.r * p[k], 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
     }

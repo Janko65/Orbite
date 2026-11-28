@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 129; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 130; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -2292,9 +2292,9 @@ function beltWatch(Bt) {
     if (ref && (hyp(h.vx - ref.vx, h.vy - ref.vy) > 0.15 * vo + 3 || m < 0.75 * ref.m || m > 1.4 * ref.m)) { rocks.forEach((r, ri) => releaseRock(b, bi, ri, r, h, m)); return; }
     D.bref[bi] = { vx: h.vx, vy: h.vy, m };
     for (const S of Bt) {
-      if (!S.star || S.gone || S.i === b.p || (!D.st[b.p] && !D.st[S.i])) continue; // deux astres fixes : la ceinture est stable par construction
+      if (!S.star || S.gone || S.i === b.p) continue;
       const zone = zoneOf(L, S.i, 'dz') * S.r || S.r * 1.15, dd = hyp(S.x - h.x, S.y - h.y); // sa zone de décomposition (sinon : au contact)
-      if (dd - b.r - b.w / 2 > zone) continue;
+      if (dd - b.r * (1 + (b.e || 0)) - b.w / 2 > zone) continue;
       const rot = performance.now() / 1000 * 0.02;
       rocks.forEach((r, ri) => { if (gone && gone.has(ri)) return; const [cx, cy] = beltPt(b, r.a + rot, b.r + r.dr); if (hyp(cx - S.x, cy - S.y) < zone) releaseRock(b, bi, ri, r, h, m); });
     }
@@ -2338,7 +2338,7 @@ function moveFlyRocks(fdt) {
       if (!S.star || S.gone) continue;
       const d = hyp(q.x - S.x, q.y - S.y), u = 1 - (d - S.r) / (S.r * 2.5);
       if (d < Math.max(S.r * 3, zoneOf(L, S.i, 'dz') * S.r) && tideCount < TIDE_MAX + 1500) { // happé par le canal : le caillou s'y engage en morceau, avec quelques éclats
-        const c = quantRGB(q.c.startsWith('#') ? [1, 3, 5].map(j => parseInt(q.c.slice(j, j + 2), 16)).join(',') : q.c.replace(/[^\d,]/g, ''));
+        const c = quantRGB(q.c.startsWith('#') ? [1, 3, 5].map(j => parseInt(q.c.slice(j, j + 2), 16)).join(',') : q.c.replace(/[^\d.,]/g, ''));
         particles.push({ x: q.x, y: q.y, vx: q.vx, vy: q.vy, life: Infinity, max: 1, sz: Math.max(1.2, q.s * 0.45), grav: true, slide: true, tide: S.i, tb: 0, chunk: true, c });
         const n = 2 + Math.round(q.s * 0.8);
         for (let k = 0; k < n; k++) particles.push({ x: q.x + (Math.random() - 0.5) * q.s, y: q.y + (Math.random() - 0.5) * q.s, vx: q.vx + (Math.random() - 0.5) * 8, vy: q.vy + (Math.random() - 0.5) * 8, life: Infinity, max: 1, sz: 0.6 + Math.random() * 0.6, grav: true, slide: true, tide: S.i, tb: 0, c });
@@ -2608,6 +2608,36 @@ function starGrowStep(dt) {
     const i = +k, g = (D.gr = D.gr || {})[i] ?? 1, t = D.grT[k]; if (g >= t || D.gone[i]) continue;
     D.gr[i] = Math.min(t, g + 0.015 * dt); D.rmax[i] = L.planets[i].r * (D.sk && D.sk[i] || 1) * D.gr[i]; // lentement mais sûrement
   }
+}
+// zone de décomposition esthétique (ez, en rayons d'étoile) : l'étoile arrache des pixels aux couleurs de ce qu'elle frôle
+// (astres, cailloux des ceintures, vaisseau). Pur décor : ni masse, ni gravité, ni contact, et elle ne grossit pas avec.
+function auraEmit(dt) {
+  if (tideCount > TIDE_MAX * 0.7) return;
+  for (const S of B) {
+    if (!S.star || S.gone || S.bh) continue;
+    const ez = zoneOf(L, S.i, 'ez') * S.r; if (ez <= S.r) continue;
+    const emit = (x, y, r, vx, vy, col, rate) => { // depuis le bord tourné vers l'étoile
+      const dx = S.x - x, dy = S.y - y, d = Math.hypot(dx, dy) || 1, near = d - r; if (near > ez) return;
+      const u = Math.min(1, 1 - (near - S.r) / Math.max(1, ez - S.r)), n = rate * (0.25 + u * u) * dt;
+      for (let k = Math.floor(n) + (Math.random() < n % 1 ? 1 : 0); k > 0; k--) {
+        const a = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.6 * (0.4 + 0.6 * (1 - u)), px = x + Math.cos(a) * r, py = y + Math.sin(a) * r, sp = 10 + 30 * u;
+        tideCount++; particles.push({ x: px, y: py, vx: vx + dx / d * sp + (Math.random() - 0.5) * 8, vy: vy + dy / d * sp + (Math.random() - 0.5) * 8, life: 30, max: 1, sz: 0.7 + Math.random() * 0.9, grav: true, slide: true, ae: true, tide: S.i, tb: 0, c: quantRGB(typeof col === 'function' ? col() : col) });
+      }
+    };
+    for (const b of B) if (!b.star && !b.gone && b.i !== undefined && L.planets[b.i]) emit(b.x, b.y, b.r, b.vx, b.vy, bodyColor(b.i), 20 + b.r * 1.4);
+    if (B.belts) B.belts.forEach((bl, bi) => { // quelques grains pris aux cailloux de la ceinture
+      const h = B[bl.p]; if (!h || h.gone || h.star) return;
+      const rocks = beltRocks(bl), gone = beltGone[bi], rot = performance.now() / 1000 * 0.02;
+      for (let k = 0; k < 5; k++) { const ri = Math.floor(Math.random() * rocks.length), r = rocks[ri]; if (!r || (gone && gone.has(ri))) continue; const [cx, cy] = beltPt(bl, r.a + rot, bl.r + r.dr); emit(cx, cy, r.s * 0.5, h.vx, h.vy, rockRGB(r.c), 10); }
+    });
+    if (!ship.dead && launched) emit(ship.x, ship.y, 4, ship.vx, ship.vy, () => Math.random() < 0.6 ? '216,216,216' : '255,168,72', 25);
+  }
+}
+const rockRGB = c => !c ? '170,150,130' : c.startsWith('#') ? [1, 3, 5].map(j => parseInt(c.slice(j, j + 2), 16)).join(',') : c.replace(/[^\d.,]/g, '').split(',').slice(0, 3).join(',');
+function auraPull(q) { // seule l'étoile l'attire (attraction appuyée pour que le flot se voie)
+  const S = B[q.tide]; if (!S || S.gone) return [0, 0];
+  const dx = S.x - q.x, dy = S.y - q.y, d = Math.hypot(dx, dy) || 1, a = Math.max(S.m / (d * d), 70);
+  return [dx / d * a, dy / d * a];
 }
 // la dernière miette disparaît : l'astre n'est plus (sa masse passe, à peine, à l'étoile)
 function finishEat(i, S) {
@@ -3620,6 +3650,7 @@ function frame(now) {
   if ((screen === 'game') !== wakeWant) keepAwake(screen === 'game');
   moveWrecks(fdt); moveBigBlobs(fdt); moveFlyRocks(fdt);
   const starsHere = !!(B && B.some(b => b.star && !b.gone)); // une étoile : les débris qui l'approchent seront happés
+  if (starsHere && screen === 'game') auraEmit(fdt);
   for (const q of particles) {
     if (q.wait > 0) { q.wait -= fdt; continue; } // pixel encore accroché à l'épave : il part quand l'onde de choc l'atteint
     if (!q.grav && !q.rgb && B && screen === 'game') { // gaz du réacteur : il s'écrase sur l'astre et file le long de sa surface (décollage, atterrissage)
@@ -3636,7 +3667,7 @@ function frame(now) {
     }
     if (q.dust && B) { q.vx *= 1 - Math.min(1, 2.2 * fdt); q.vy *= 1 - Math.min(1, 2.2 * fdt); } // la poussière soulevée ralentit vite
     if (q.grav && B) { // débris d'anneaux : gravité des astres, et ils s'écrasent à leur surface
-      let [ax, ay] = gravity(B, q.x, q.y);
+      let [ax, ay] = q.ae ? auraPull(q) : gravity(B, q.x, q.y);
       if (q.free !== undefined && B[q.free]) { const o = B[q.free], dx = o.x - q.x, dy = o.y - q.y, d2 = Math.max(1, dx * dx + dy * dy), g = o.m / (d2 * Math.sqrt(d2)); ax -= g * dx; ay -= g * dy; }
       q.vx += ax * fdt; q.vy += ay * fdt;
       if (q.tide === undefined && starsHere) for (const S of B) { // gouttes de magma, roches, poussières qui passent trop près : happées par le canal
@@ -3666,6 +3697,7 @@ function frame(now) {
           }
         }
       }
+      if (q.ae) { const S = B[q.tide]; if (!S || S.gone || hyp(q.x - S.x, q.y - S.y) < S.r) q.life = 0; q.x += q.vx * fdt; q.y += q.vy * fdt; continue; } // pixel du halo : il ne touche rien, il finit dans l'étoile
       if (bigBlobs.length) { const [bx, by] = blobGravity(q.x, q.y); q.vx += bx * fdt; q.vy += by * fdt; } // mini gravité des grosses bulles
       const rk = q.slide ? beltRockAt(q.x, q.y) : null; // les débris rebondissent et glissent aussi sur les cailloux des ceintures
       for (const b of rk ? [rk] : bigBlobs.length ? B.concat(bigBlobs) : B) {

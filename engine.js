@@ -69,7 +69,8 @@ const zoneOf = (L, i, k) => { const o = L._lz && L._lz[i], v = o && o[k] !== und
 // (sinon il se défait tout seul). On suit les astres sur 4 minutes de leurs orbites.
 function stabilityOf(L, names = i => '#' + i) {
   const P = L.planets, stars = P.map((p, i) => i).filter(i => P[i].star), bodies = P.map((p, i) => i).filter(i => !P[i].star && P[i].loose);
-  if (!stars.length || !bodies.length) return { ok: true };
+  const belts = (L.belts || []).filter(b => P[b.p] && !P[b.p].star);
+  if (!stars.length || (!bodies.length && !belts.length)) return { ok: true };
   let worst = null;
   for (let t = 0; t <= 240; t += 0.25) for (const s of stars) {
     const [sx, sy] = bodyPos(L, s, t), R = P[s].r, dz = zoneOf(L, s, 'dz') * R, az = zoneOf(L, s, 'az') * R;
@@ -78,6 +79,10 @@ function stabilityOf(L, names = i => '#' + i) {
       const why = d < R + r ? 'touche' : az && d - r * 0.5 < az ? 'aspiration' : dz && d - r < dz ? 'décomposition' : null;
       if (why) return { ok: false, why, body: b, star: s, t, text: why === 'touche' ? `${names(b)} touche ${names(s)}` : `${names(b)} entre dans la zone ${why === 'aspiration' ? 'd’aspiration' : 'de décomposition'} de ${names(s)}` };
       const m = d - r - Math.max(dz, az, R); if (!worst || m < worst.m) worst = { m, body: b, star: s };
+    }
+    for (const bl of belts) { // une ceinture qui entre dans la zone de décomposition (ou frôle l'étoile) s'y défait toute seule
+      const [x, y] = bodyPos(L, bl.p, t), d = hyp(x - sx, y - sy) - (bl.r * (1 + (+bl.e || 0)) + (bl.w || 0) / 2);
+      if (d < (dz || R * 1.15)) return { ok: false, why: 'ceinture', body: bl.p, star: s, t, text: `la ceinture de ${names(bl.p)} entre dans la zone de décomposition de ${names(s)}` };
     }
   }
   return { ok: true, margin: worst };
