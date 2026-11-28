@@ -25,7 +25,7 @@ canvas{display:block;position:fixed;inset:0;width:100%;height:100%;touch-action:
 <script src="niveaux.js"></script>
 <script>
 // ===== Jeu (portée globale : partagée avec editeur.js) =====
-const APP_VERSION = 130; // à garder égal au numéro de CACHE dans sw.js
+const APP_VERSION = 131; // à garder égal au numéro de CACHE dans sw.js
 const SPEED_BAR_MAX = 200; // vitesse affichée en barre pleine (m/s)
 const FONT = 'system-ui,-apple-system,sans-serif';
 
@@ -2618,13 +2618,23 @@ function auraEmit(dt) {
     const ez = zoneOf(L, S.i, 'ez') * S.r; if (ez <= S.r) continue;
     const emit = (x, y, r, vx, vy, col, rate) => { // depuis le bord tourné vers l'étoile
       const dx = S.x - x, dy = S.y - y, d = Math.hypot(dx, dy) || 1, near = d - r; if (near > ez) return;
-      const u = Math.min(1, 1 - (near - S.r) / Math.max(1, ez - S.r)), n = rate * (0.25 + u * u) * dt;
+      const u = Math.min(1, 1 - (near - S.r) / Math.max(1, ez - S.r)), n = rate * (0.08 + u * u) * dt, ca = r ? (d * d + r * r - ez * ez) / (2 * d * r) : 1, half = r ? Math.acos(Math.max(-1, Math.min(1, ca))) : 0; // seule la partie de la surface entrée dans la zone
       for (let k = Math.floor(n) + (Math.random() < n % 1 ? 1 : 0); k > 0; k--) {
-        const a = Math.atan2(dy, dx) + (Math.random() - 0.5) * 1.6 * (0.4 + 0.6 * (1 - u)), px = x + Math.cos(a) * r, py = y + Math.sin(a) * r, sp = 10 + 30 * u;
-        tideCount++; particles.push({ x: px, y: py, vx: vx + dx / d * sp + (Math.random() - 0.5) * 8, vy: vy + dy / d * sp + (Math.random() - 0.5) * 8, life: 30, max: 1, sz: 0.7 + Math.random() * 0.9, grav: true, slide: true, ae: true, tide: S.i, tb: 0, c: quantRGB(typeof col === 'function' ? col() : col) });
+        const a = Math.atan2(dy, dx) + (Math.random() - 0.5) * 2 * half, px = x + Math.cos(a) * r + (r ? 0 : (Math.random() - 0.5) * 6), py = y + Math.sin(a) * r, sp = 10 + 30 * u;
+        tideCount++; particles.push({ x: px, y: py, vx: vx + dx / d * sp + (Math.random() - 0.5) * 8, vy: vy + dy / d * sp + (Math.random() - 0.5) * 8, life: 30, max: 1, sz: 0.3 + Math.random() * 0.25, grav: true, slide: true, ae: true, tide: S.i, tb: 0, c: quantRGB(typeof col === 'function' ? col() : col) });
       }
     };
-    for (const b of B) if (!b.star && !b.gone && b.i !== undefined && L.planets[b.i]) emit(b.x, b.y, b.r, b.vx, b.vy, bodyColor(b.i), 20 + b.r * 1.4);
+    const ps = L.planets[S.i], host = ps.orbit && L.planets[ps.orbit.p] && !L.planets[ps.orbit.p].star && !(L._dyn && L._dyn.st[S.i]) ? ps.orbit.p : -1;
+    if (host >= 0) { const b = B[host]; if (b && !b.gone) emit(b.x, b.y, b.r, b.vx, b.vy, bodyColor(host), 20 + b.r * 1.4); continue; } // étoile en orbite autour d'une planète : seule la surface de celle-ci est prise
+    for (const b of B) {
+      if (b.star || b.gone || b.i === undefined || !L.planets[b.i]) continue;
+      emit(b.x, b.y, b.r, b.vx, b.vy, bodyColor(b.i), 20 + b.r * 1.4);
+      const vp = visP(b.i); if (!hasRings(vp)) continue;
+      const f = ringForm(vp), Ro = Math.max(...f.bands.map(q => q[3])) * b.r, ct = Math.cos(f.tilt), st = Math.sin(f.tilt);
+      let bx = 0, by = 0, bd = Infinity; // le bout de l'anneau le plus proche de l'étoile
+      for (let k = 0; k < 24; k++) { const a = k / 24 * Math.PI * 2, u = Math.cos(a) * Ro, v = Math.sin(a) * Ro * f.flat, x = b.x + u * ct - v * st, y = b.y + u * st + v * ct, d = hyp(x - S.x, y - S.y); if (d < bd) { bd = d; bx = x; by = y; } }
+      emit(bx, by, 0, b.vx, b.vy, ringColor(vp).startsWith('#') ? rockRGB(ringColor(vp)) : '214,196,150', 14);
+    }
     if (B.belts) B.belts.forEach((bl, bi) => { // quelques grains pris aux cailloux de la ceinture
       const h = B[bl.p]; if (!h || h.gone || h.star) return;
       const rocks = beltRocks(bl), gone = beltGone[bi], rot = performance.now() / 1000 * 0.02;
