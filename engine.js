@@ -76,7 +76,7 @@ function stabilityOf(L, names = i => '#' + i) {
     const [sx, sy] = bodyPos(L, s, t), R = P[s].r, dz = zoneOf(L, s, 'dz') * R, az = zoneOf(L, s, 'az') * R;
     for (const b of bodies) {
       const [x, y] = bodyPos(L, b, t), d = hyp(x - sx, y - sy), r = P[b].r;
-      const why = d < R + r ? 'touche' : az && d - r * 0.5 < az ? 'aspiration' : dz && d - r < dz ? 'décomposition' : null;
+      const why = d < R + r ? 'touche' : az && d - r < az ? 'aspiration' : dz && d - r < dz ? 'décomposition' : null;
       if (why) return { ok: false, why, body: b, star: s, t, text: why === 'touche' ? `${names(b)} touche ${names(s)}` : `${names(b)} entre dans la zone ${why === 'aspiration' ? 'd’aspiration' : 'de décomposition'} de ${names(s)}` };
       const m = d - r - Math.max(dz, az, R); if (!worst || m < worst.m) worst = { m, body: b, star: s };
     }
@@ -230,15 +230,30 @@ function stepText(L, o) {
 }
 
 // ===== Pilote automatique =====
-function steer(B, s, tx, ty, final, P) {
+function steer(B, s, tx, ty, final, P, bvx = 0, bvy = 0) { // bvx, bvy : vitesse de la cible (astre qui se déplace), ajoutée à la vitesse visée
   const dx = tx - s.x, dy = ty - s.y, d = hyp(dx, dy) || 1;
   const spd = Math.min(P.vmax, Math.sqrt(final * final + 2 * P.brake * d));
   const [gx, gy] = gravity(B, s.x, s.y);
-  const ax = (dx / d * spd - s.vx) * P.gain - gx * P.comp, ay = (dy / d * spd - s.vy) * P.gain - gy * P.comp;
+  const ax = (bvx + dx / d * spd - s.vx) * P.gain - gx * P.comp, ay = (bvy + dy / d * spd - s.vy) * P.gain - gy * P.comp;
   const am = hyp(ax, ay);
   return am < P.db * THRUST ? null : { x: ax / am, y: ay / am, p: Math.min(1, am / THRUST) };
 }
 
+// pose sur un astre qui tourne en roue : la vitesse visée est celle de son sol sous le vaisseau (ω × r, qui l'entraîne), plus la
+// descente vers la surface ; ainsi il arrive presque immobile par rapport au sol, comme un joueur stabilisé
+function steerGround(B, s, p, a, final, P) {
+  const dx = s.x - p.x, dy = s.y - p.y, d = hyp(dx, dy) || 1, nx = dx / d, ny = dy / d, w = p.w;
+  const alt = Math.max(0, d - p.r - HULL_R), R0 = p.r + HULL_R;
+  // vitesse tangentielle visée : celle du sol (ω × rayon de la surface), de plus en plus franche en approchant ; P.gm règle l'anticipation
+  const gm = P.gm ?? 0.5, u = Math.max(0, Math.min(1, 1 - (alt - 60 - 300 * gm) / (150 + 300 * gm))), vtg = w * R0 * u;
+  const gvx = p.vx - ny * vtg, gvy = p.vy + nx * vtg;
+  const tang = Math.abs((s.vx - gvx) * -ny + (s.vy - gvy) * nx); // écart tangentiel avec le sol
+  const spd = Math.min(P.vmax, Math.sqrt(final * final + 2 * P.brake * alt)) * (alt < 120 && tang > 20 ? 0.4 : 1); // près du sol et pas encore calé : il descend peu
+  const [gx, gy] = gravity(B, s.x, s.y);
+  const ax = (gvx - nx * spd - s.vx) * P.gain - gx * P.comp, ay = (gvy - ny * spd - s.vy) * P.gain - gy * P.comp;
+  const am = hyp(ax, ay);
+  return am < P.db * THRUST ? null : { x: ax / am, y: ay / am, p: Math.min(1, am / THRUST) };
+}
 function orbitSteer(B, s, i, P) {
   const p = B[i], dx = s.x - p.x, dy = s.y - p.y, r = hyp(dx, dy) || 1, nx = dx / r, ny = dy / r;
   const inf = influence(B, i), rtMin = p.r + 30, rtMax = Math.max(rtMin + 10, Math.min(inf.soi * 0.85, p.r * 2.5 + 30));
@@ -276,7 +291,12 @@ function missionControl(L, B, s, m, P0, ws) {
   if (o.type === 'zone') return steer(B, s, o.x, o.y, 0, P);
   if (o.type === 'land') {
     const p = B[o.p], a = Math.atan2(s.y - p.y, s.x - p.x);
-    return steer(B, s, p.x + Math.cos(a) * (p.r + HULL_R), p.y + Math.sin(a) * (p.r + HULL_R), P.land, P);
+    if (p.w) return steerGround(B, s, p, a, P.land, P); // astre qui tourne en roue : se caler sur son sol avant de descendre
+    // astre qui se déplace (lune, planète en orbite) : se caler sur sa vitesse en approchant (P.gv, tiré par le solveur ;
+    // absent des solutions enregistrées avant : elles se rejouent à l'identique)
+    let bvx = 0, bvy = 0;
+    if (P.gv) { const alt = Math.max(0, hyp(s.x - p.x, s.y - p.y) - p.r - HULL_R), u = P.gv * Math.max(0, Math.min(1, 1 - (alt - 40) / 300)); bvx = p.vx * u; bvy = p.vy * u; }
+    return steer(B, s, p.x + Math.cos(a) * (p.r + HULL_R), p.y + Math.sin(a) * (p.r + HULL_R), P.land, P, bvx, bvy);
   }
   return orbitSteer(B, s, o.p, P);
 }
@@ -357,7 +377,7 @@ function predict(L, o) {
       if (d < p.r + HULL_R) {
         path.push([x, y]);
         const nx = (x - p.x) / d, ny = (y - p.y) / d;
-        return { path, hit: { x, y, t: i * h, p: p.i, v: hyp(vx - p.vx, vy - p.vy), da: Math.acos(Math.max(-1, Math.min(1, Math.cos(o.ang) * nx + Math.sin(o.ang) * ny))) * 180 / Math.PI, star: p.star, crash: p.star || hyp(vx - p.vx, vy - p.vy) > CRASH_SPEED || !rearOk(o.ang, (x - p.x) / d, (y - p.y) / d) } };
+        return { path, hit: { x, y, t: i * h, p: p.i, v: hyp(vx - (p.vx - (p.w || 0) * (y - p.y)), vy - (p.vy + (p.w || 0) * (x - p.x))), /* vitesse par rapport au sol (qui tourne) */ da: Math.acos(Math.max(-1, Math.min(1, Math.cos(o.ang) * nx + Math.sin(o.ang) * ny))) * 180 / Math.PI, star: p.star, crash: p.star || hyp(vx - p.vx, vy - p.vy) > CRASH_SPEED || !rearOk(o.ang, (x - p.x) / d, (y - p.y) / d) } };
       }
     }
     if (x < -OUT_MARGIN || x > WORLD_W + OUT_MARGIN || y < -OUT_MARGIN || y > worldH(L) + OUT_MARGIN) break;
@@ -374,18 +394,18 @@ function randP(L, withWps, rnd = Math.random) {
     return w;
   });
   return { wps, vmax: R(30, 220), brake: R(10, 100), gain: R(0.3, 4), comp: R(0, 1), db: R(0, 0.4), land: R(5, 35),
-    orbR: R(0, 1), orbDir: rnd() < 0.5 ? -1 : 1, orbK: R(0.2, 1.5), wait: R(0, 6) };
+    orbR: R(0, 1), orbDir: rnd() < 0.5 ? -1 : 1, orbK: R(0.2, 1.5), wait: R(0, 6), gm: R(0, 1), gv: rnd() < 0.3 ? 0 : R(0.3, 1) };
 }
 function mutate(P, rnd = Math.random, k = 1, hgt = WORLD_H) {
   const m = (v, s, lo, hi) => Math.max(lo, Math.min(hi, v + (rnd() - 0.5) * s * k));
   const par = Q => ({ vmax: m(Q.vmax, 30, 20, 250), brake: m(Q.brake, 15, 5, 120), gain: m(Q.gain, 0.5, 0.2, 5),
     comp: m(Q.comp, 0.15, 0, 1), db: m(Q.db, 0.06, 0, 0.6), land: m(Q.land, 6, 3, 40),
-    orbR: m(Q.orbR, 0.15, 0, 1), orbDir: rnd() < 0.03 ? -Q.orbDir : Q.orbDir, orbK: m(Q.orbK, 0.2, 0.1, 2), wait: m(Q.wait || 0, 1.5, 0, 8) });
+    orbR: m(Q.orbR, 0.15, 0, 1), orbDir: rnd() < 0.03 ? -Q.orbDir : Q.orbDir, orbK: m(Q.orbK, 0.2, 0.1, 2), wait: m(Q.wait || 0, 1.5, 0, 8), gm: m(Q.gm ?? 0.5, 0.2, 0, 1), gv: m(Q.gv || 0, 0.2, 0, 1) });
   const out = { wps: P.wps.map(w => w.map(([x, y]) => [m(x, 60, 30, WORLD_W - 30), m(y, 60, 30, hgt - 30)])), ...par(P) };
   if (P.per) out.per = P.per.map(par);
   return out;
 }
-const PARAM_KEYS = ['vmax', 'brake', 'gain', 'comp', 'db', 'land', 'orbR', 'orbDir', 'orbK', 'wait'];
+const PARAM_KEYS = ['vmax', 'brake', 'gain', 'comp', 'db', 'land', 'orbR', 'orbDir', 'orbK', 'wait', 'gm', 'gv'];
 const paramsOf = P => Object.fromEntries(PARAM_KEYS.map(k => [k, P[k]]));
 
 // Solution la plus adaptée : meilleur compromis temps / gaz (rapportés au gaz disponible et au temps objectif)
