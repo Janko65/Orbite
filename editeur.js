@@ -43,6 +43,10 @@ const ED = { mode: 'perso', levels: [], cur: 0, sel: null, tab: 'astre', drag: n
   #edCenter button{width:56px;min-height:56px;padding:0;border-radius:28px;background:rgba(20,20,24,.88);font-size:11px;line-height:1.1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
   #edCenter button b{font-size:20px;font-weight:600}
   #edCenter button.pri{background:#fff;color:#000}
+  #edCenter .edStab{width:56px;padding:6px 2px;border-radius:14px;font-size:10px;font-weight:700;text-align:center;line-height:1.15;cursor:pointer;border:1px solid rgba(255,255,255,.25)}
+  #edCenter .edStab.ok{background:rgba(40,120,70,.9);color:#fff}
+  #edCenter .edStab.ko{background:rgba(190,90,20,.92);color:#fff}
+  #edStabTip{position:fixed;z-index:12;right:74px;max-width:60vw;padding:8px 10px;border-radius:10px;background:rgba(20,20,24,.95);color:#fff;font-size:13px;border:1px solid rgba(255,255,255,.2)}
   .edTabs button.on{color:#fff;box-shadow:inset 0 -2px 0 #fff}
   .edBody{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
   .row{display:flex;gap:8px;align-items:center}
@@ -158,6 +162,22 @@ function changed(retexture) {
   if (retexture) { clearTimeout(changed.t); changed.t = setTimeout(buildTextures, 120); }
   saveDraft();
   refreshLevelSelect();
+  clearTimeout(changed.s); changed.s = setTimeout(updStab, 250);
+}
+// stabilité du niveau : sans le vaisseau, rien ne doit se défaire tout seul (aucun astre détachable ne touche une étoile
+// ni n'entre dans ses zones de décomposition ou d'aspiration)
+let stabRes = { ok: true };
+function updStab() {
+  const b = document.getElementById('edStab'); if (!b || !ED.levels || !ED.levels[ED.cur]) return;
+  const Lv = EL(); stabRes = stabilityOf(Lv, i => { const p = Lv.planets[i]; return p.name || (p.star ? 'l’étoile' : p.type); });
+  b.className = 'edStab ' + (stabRes.ok ? 'ok' : 'ko'); b.textContent = stabRes.ok ? '✓ Stable' : '⚠ Instable';
+  editorLayout();
+}
+function showStabTip() {
+  document.getElementById('edStabTip')?.remove();
+  const b = document.getElementById('edStab'), r = b.getBoundingClientRect();
+  const t = el('div', { id: 'edStabTip' }, stabRes.ok ? 'Niveau stable : sans le vaisseau, rien ne se défait tout seul.' : `Niveau instable : ${stabRes.text} (vers ${Math.round(stabRes.t)} s).`);
+  t.style.top = r.top + 'px'; document.body.append(t); setTimeout(() => t.remove(), 4000);
 }
 
 function selectLevel(i) {
@@ -165,7 +185,7 @@ function selectLevel(i) {
   ED.cur = i; ED.sel = null; ED.hintCache = null;
   L = EL(); lvl = i; invalidate(L);
   editorLayout(); buildTextures();
-  refreshLevelSelect(); renderPanel();
+  refreshLevelSelect(); renderPanel(); updStab();
 }
 
 // ===== Mise en page : carte entre la barre du haut et le panneau (repliable) =====
@@ -178,7 +198,7 @@ function editorLayout() {
   const p = document.getElementById('edPanel');
   if (p) p.style.height = panelH + 'px';
   const c = document.getElementById('edCenter');
-  if (c) c.style.top = Math.max(ED.top + 8, ED.mapBottom - 194) + 'px'; // colonne d'outils en bas à droite de la carte
+  if (c) c.style.top = Math.max(ED.top + 8, ED.mapBottom - c.offsetHeight - 10) + 'px'; // colonne d'outils en bas à droite de la carte, toute visible
   if (ED.view) { ({ scale, ox, oy } = ED.view); return; }
   const area = ED.mapBottom - ED.top - 8, hh = ED.levels && ED.levels[ED.cur] ? worldH(EL()) : WORLD_H;
   scale = Math.min(W / WORLD_W, area / hh);
@@ -204,12 +224,13 @@ function buildUI() {
   // outils toujours à portée de pouce, à droite de la carte
   const tool = (ic, t, f, cls = '') => el('button', { class: cls, onclick: f }, el('b', {}, ic), t);
   const center = el('div', { id: 'edCenter', class: 'ed' },
+    el('div', { class: 'edStab', id: 'edStab', onclick: showStabTip }), // niveau stable ou non (sans le vaisseau)
     tool('⤢', 'Cadrer', () => { ED.view = null; editorLayout(); buildTextures(); }),
     tool('☄', 'Tout détacher', toggleAllLoose, 'edLoose'),
     tool('🎲', 'Hasard', rerollLevel),
     tool('▶', 'Tester', () => testLevel(), 'pri'));
   document.body.append(top, panel, center);
-  editorLayout(); syncLooseBtn();
+  editorLayout(); syncLooseBtn(); updStab();
 }
 // tout le niveau détachable (ou tout fixe à nouveau) : chaque astre sauf les étoiles
 const allLoose = Lv => Lv.planets.some(p => !p.star) && Lv.planets.every(p => p.star || p.loose);
@@ -274,6 +295,10 @@ function panelBody(body) {
     // étoile : couleur (température) et intensité de la lumière émise
     body.append(slider('Couleur', 0, 1, 0.05, p.temp ?? 0.5, v => starName({ temp: v }), v => { p.temp = +v.toFixed(2); changed(true); }));
     body.append(slider('Rotation', -0.4, 0.4, 0.01, starSpin(p, sel), v => v ? `${(Math.abs(v) * 60 / (2 * Math.PI)).toFixed(1)} tr/min ${v > 0 ? '↻' : '↺'}` : 'aucune', v => { p.spin = +v.toFixed(2); changed(false); })); // sens de la spirale de matière aspirée
+    // zones de l'étoile (en rayons d'étoile) : décomposition (la surface des astres s'effrite, 10 % au plus) et aspiration (plus près : ils s'y défont)
+    const zr = v => v ? `${v.toFixed(1)} × rayon` : 'aucune';
+    body.append(slider('Zone de décomposition', 0, 8, 0.1, +p.dz || 0, zr, v => { if (v >= 1.05) p.dz = +v.toFixed(1); else delete p.dz; if (p.az && p.dz && p.az > p.dz) p.az = p.dz; changed(false); }));
+    body.append(slider("Zone d'aspiration", 0, 8, 0.1, +p.az || 0, zr, v => { if (v >= 1.05) p.az = +Math.min(v, p.dz || v).toFixed(1); else delete p.az; changed(false); }));
     body.append(slider('Intensité', 0.3, 2, 0.05, p.lum ?? 1, v => `× ${v.toFixed(2)}`, v => { p.lum = +v.toFixed(2); if (p.lum === 1) delete p.lum; changed(false); }));
     body.append(el('div', { class: 'hint' }, 'De la géante rouge à la naine blanche. Plus une étoile est grosse et intense, plus ses ombres sont marquées ; les ombres prennent la couleur des autres étoiles.'));
   }
@@ -828,6 +853,7 @@ function sanitizeLevel(o) {
     if (p.loose === true && !q.star) q.loose = true;
     if ((p.core === 'roc' || p.core === 'magma') && !q.star) q.core = p.core;
     if (+p.roll && !q.star) q.roll = num(p.roll, -1, 1);
+    if (q.star && +p.dz) q.dz = num(p.dz, 1, 8); if (q.star && +p.az) q.az = num(p.az, 1, q.dz || 8); // zones de l'étoile
     if (p.spin !== undefined && (q.star || +p.spin)) q.spin = num(p.spin, -1, 1); // étoile : 0 = immobile (sinon elle tourne par défaut)
     if (p.flow !== undefined && !q.star) q.flow = num(p.flow, 0.3, 3);
     return q;
@@ -1011,6 +1037,14 @@ function editorDraw() {
     gr.addColorStop(0, 'rgba(255,255,255,0.2)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(p.x, p.y, o.soi, 0, Math.PI * 2); ctx.fill();
   }
+  // zones des étoiles : décomposition (pointillés orangés) et aspiration (pointillés rouges)
+  Lv.planets.forEach((p, i) => {
+    if (!p.star || !Bs[i]) return;
+    for (const [k, c] of [['dz', 'rgba(255,170,90,0.45)'], ['az', 'rgba(255,80,60,0.55)']]) {
+      if (!(+p[k] > 1)) continue;
+      ctx.strokeStyle = c; ctx.lineWidth = lw; ctx.setLineDash([5 / scale, 5 / scale]); ctx.beginPath(); ctx.arc(Bs[i].x, Bs[i].y, p.r * p[k], 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    }
+  });
   // orbites des lunes
   Lv.planets.forEach(p => {
     if (!p.orbit) return;

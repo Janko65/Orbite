@@ -62,19 +62,39 @@ function bodyPos(L, i, t) {
 }
 // position de tous les astres à l'instant t (temps compté depuis le premier jet)
 // B.belts : ceintures d'astéroïdes {x, y, r, w} autour d'une planète ou d'une étoile (jamais d'une lune)
+// zones d'une étoile, en rayons d'étoile : décomposition (dz) et aspiration (az, plus près). Celles du niveau, ou celles qu'ajoute
+// l'apparence d'un niveau officiel (L._lz, hors de son empreinte)
+const zoneOf = (L, i, k) => { const o = L._lz && L._lz[i], v = o && o[k] !== undefined ? o[k] : L.planets[i][k]; return Math.max(0, +v || 0); };
+// un niveau est-il stable ? Sans le vaisseau, aucun astre détachable ne doit jamais toucher une étoile ni entrer dans ses zones
+// (sinon il se défait tout seul). On suit les astres sur 4 minutes de leurs orbites.
+function stabilityOf(L, names = i => '#' + i) {
+  const P = L.planets, stars = P.map((p, i) => i).filter(i => P[i].star), bodies = P.map((p, i) => i).filter(i => !P[i].star && P[i].loose);
+  if (!stars.length || !bodies.length) return { ok: true };
+  let worst = null;
+  for (let t = 0; t <= 240; t += 0.25) for (const s of stars) {
+    const [sx, sy] = bodyPos(L, s, t), R = P[s].r, dz = zoneOf(L, s, 'dz') * R, az = zoneOf(L, s, 'az') * R;
+    for (const b of bodies) {
+      const [x, y] = bodyPos(L, b, t), d = hyp(x - sx, y - sy), r = P[b].r;
+      const why = d < R + r ? 'touche' : az && d - r * 0.5 < az ? 'aspiration' : dz && d - r < dz ? 'décomposition' : null;
+      if (why) return { ok: false, why, body: b, star: s, t, text: why === 'touche' ? `${names(b)} touche ${names(s)}` : `${names(b)} entre dans la zone ${why === 'aspiration' ? 'd’aspiration' : 'de décomposition'} de ${names(s)}` };
+      const m = d - r - Math.max(dz, az, R); if (!worst || m < worst.m) worst = { m, body: b, star: s };
+    }
+  }
+  return { ok: true, margin: worst };
+}
 function snapshot(L, t) {
   const withBelts = B => { B.belts = (L.belts || []).map((b, k) => [b, (L._lb && L._lb[k]) || {}]).filter(([b]) => B[b.p]).map(([b, lk]) => ({ p: b.p, x: B[b.p].x, y: B[b.p].y, r: b.r, w: b.w, e: b.e || 1, tilt: (b.tilt || 0) * Math.PI / 180, vc: lk.vc ?? b.vc ?? 0, rs: lk.rs ?? b.rs ?? 1 })); return B; }; // lk : retouche visuelle (couleurs, taille des rochers)
   const D = L._dyn;
   if (D) return withBelts(L.planets.map((p, i) => {
     if (D.gone[i]) return { i, x: 1e7, y: 1e7, vx: 0, vy: 0, r: 0, m: 0, star: !!p.star, gone: true };
     const [x, y, vx, vy] = bodyPos(L, i, t);
-    return { i, x, y, vx, vy, r: D.rmax[i] ?? p.r, m: D.m[i] ?? bodyMass(p), star: !!p.star, bh: !!(D.bh && D.bh[i]), h: p.star ? undefined : D.h[i] };
+    const r = D.rmax[i] ?? p.r; return { i, x, y, vx, vy, r, m: D.m[i] ?? bodyMass(p), star: !!p.star, bh: !!(D.bh && D.bh[i]), h: p.star ? undefined : D.h[i], w: p.star ? 0 : p.spin || 0, za: p.star ? zoneOf(L, i, 'az') * r : 0 };
   }));
   if (!hasMoons(L)) {
-    if (!L._B) L._B = withBelts(L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star })));
+    if (!L._B) L._B = withBelts(L.planets.map((p, i) => ({ i, x: p.x, y: p.y, vx: 0, vy: 0, r: p.r, m: bodyMass(p), star: !!p.star, w: p.star ? 0 : p.spin || 0, za: p.star ? zoneOf(L, i, 'az') * p.r : 0 })));
     return L._B;
   }
-  return withBelts(L.planets.map((p, i) => { const [x, y, vx, vy] = bodyPos(L, i, t); return { i, x, y, vx, vy, r: p.r, m: bodyMass(p), star: !!p.star }; }));
+  return withBelts(L.planets.map((p, i) => { const [x, y, vx, vy] = bodyPos(L, i, t); return { i, x, y, vx, vy, r: p.r, m: bodyMass(p), star: !!p.star, w: p.star ? 0 : p.spin || 0, za: p.star ? zoneOf(L, i, 'az') * p.r : 0 }; }));
 }
 // le point touche-t-il une ceinture d'astéroïdes (infranchissable) ?
 // ceinture ovale (e : rapport petit axe / grand axe, tilt : inclinaison) : un point passe dans le repère où elle est un cercle de rayon r
@@ -126,8 +146,8 @@ function inShadow(B, x, y) {
 const rearOk = (ang, nx, ny) => Math.cos(ang) * nx + Math.sin(ang) * ny >= Math.cos(TOL.angle * Math.PI / 180);
 
 function startState(L) {
-  const p = L.planets[L.start.p], a = L.start.a;
-  return { x: p.x + Math.cos(a) * (p.r + HULL_R), y: p.y + Math.sin(a) * (p.r + HULL_R), vx: 0, vy: 0, ang: a, airT: 0 };
+  const p = L.planets[L.start.p], a = L.start.a, R = p.r + HULL_R, w = p.star ? 0 : p.spin || 0; // sur un astre qui tourne en roue, il part avec la vitesse de son sol
+  return { x: p.x + Math.cos(a) * R, y: p.y + Math.sin(a) * R, vx: -w * Math.sin(a) * R, vy: w * Math.cos(a) * R, ang: a, airT: 0 };
 }
 
 const outOfBounds = (s, hgt = WORLD_H) => s.x < -OUT_MARGIN || s.x > WORLD_W + OUT_MARGIN || s.y < -OUT_MARGIN || s.y > hgt + OUT_MARGIN;
@@ -148,17 +168,21 @@ function physStep(B, s, th, h) {
   let contact = -1;
   for (const b of B) {
     const dx = s.x - b.x, dy = s.y - b.y, d = hyp(dx, dy), min = surfR(b, dx, dy) + HULL_R;
+    if (b.za && !b.gone && d < b.za) return { crash: 'aspire', p: b.i }; // zone d'aspiration d'une étoile : le vaisseau n'a aucune chance
     if (d >= min) continue;
     if (b.star) return { crash: 'star', p: b.i };
-    const nx = dx / d, ny = dy / d;
-    let rvx = s.vx - b.vx, rvy = s.vy - b.vy; // vitesse relative à l'astre (une lune bouge)
+    const nx = dx / d, ny = dy / d, w = b.w || 0;
+    // vitesse relative au sol (une lune bouge ; un astre qui tourne en roue entraîne sa surface : ω × r)
+    const gvx = b.vx - w * dy, gvy = b.vy + w * dx;
+    let rvx = s.vx - gvx, rvy = s.vy - gvy;
     if (hyp(rvx, rvy) > TOL.crash) return { crash: 'speed', p: b.i };
     if (s.airT > 0 && !rearOk(s.ang, nx, ny)) return { crash: 'angle', p: b.i };
     s.x = b.x + nx * min; s.y = b.y + ny * min;
     const vn = rvx * nx + rvy * ny; if (vn < 0) { rvx -= vn * nx; rvy -= vn * ny; }
     const f = Math.max(0, 1 - 10 * h); // frottement au sol
     const vt = rvx * -ny + rvy * nx, vn2 = Math.max(0, rvx * nx + rvy * ny);
-    s.vx = b.vx + nx * vn2 - ny * vt * f; s.vy = b.vy + ny * vn2 + nx * vt * f;
+    s.vx = gvx + nx * vn2 - ny * vt * f; s.vy = gvy + ny * vn2 + nx * vt * f;
+    if (w) s.ang += w * h; // posé sur un astre qui tourne : il tourne avec lui
     contact = b.i;
   }
   const wasAir = s.airT;
@@ -509,6 +533,6 @@ function* calibrate(L0, margins, f = 1, seeds = null) {
 }
 
 if (typeof module !== 'undefined') module.exports = {
-  WORLD_W, WORLD_H, worldH, PROF_N, beltPt, beltDist, beltAng, newDyn, aliasOf, surfR, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
+  WORLD_W, WORLD_H, worldH, PROF_N, zoneOf, stabilityOf, beltPt, beltDist, beltAng, newDyn, aliasOf, surfR, pilot, pilotInit, K, THRUST, CRASH_SPEED, LAND_ANGLE, ZONE_TIME, TOL, snapshot, inShadow, startState, influence, fly, randP, mutate,
   ratioCost, bodyMass, calibrate, defaultMargins, decodeRec,
 };
